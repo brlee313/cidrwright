@@ -1,0 +1,9 @@
+# Keep secrets and state out of the AI's context
+.env
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+*.key
+*.pem
+wg*.conf

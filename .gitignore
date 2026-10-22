@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- CIDRwright: never commit secrets or state ---
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+*.key
+*.pem
+wg*.conf
