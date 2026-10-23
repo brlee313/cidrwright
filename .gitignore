@@ -227,3 +227,5 @@ __marimo__/
 *.key
 *.pem
 wg*.conf
+.aider*
+!.aiderignore
