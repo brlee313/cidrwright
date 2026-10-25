@@ -1,6 +1,7 @@
 # M2 design: ipam.py subnet allocator
 
-Status: revised Oct 23, 2026 after architect review. Input for aider
+Status: revised Oct 23, 2026 after architect review; error-order rule
+clarified Oct 25, 2026 after the Stage 1 test audit. Input for aider
 architect mode. Background and reasons: `docs/recon/terraform-aws-vpc.md`.
 
 ## Scope
@@ -49,8 +50,13 @@ module docstring.
 
 ## Validation
 
-`validate(data)` collects **every** error, in document order, and raises
-one `ConfigError` at the end. It never stops at the first problem.
+`validate(data)` collects **every** error and raises one `ConfigError`
+at the end. It never stops at the first problem.
+
+Errors are reported in document order, except that a mapping's own
+problems (unknown or missing keys) come before the problems inside it.
+(A missing key has no position in the document, so strict document
+order can't place it.)
 
 ### Message format
 
@@ -58,7 +64,8 @@ one `ConfigError` at the end. It never stops at the first problem.
 
 - Locations: `vpc`, `vpc.cidr`, `vpc.azs`, `vpc.azs[2]`, `tiers`,
   `tiers[1]`, and `tiers[1] (private)` once the tier's name is valid.
-  The top level is `config`.
+  The top level is `config`. The capacity error is also reported at
+  `config`, since it concerns the whole network rather than one tier.
 - Example: `tiers[1] (private): hosts 5000 needs a /19, larger than the VPC /20`.
 - When a YAML 1.1 bareword was turned into a bool or number (an AZ
   written as `no`, a name written as `on`), the message says to quote it.
