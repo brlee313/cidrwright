@@ -101,3 +101,27 @@ so a validator that rejected everything would pass most of it.
   before the problems inside it. The code already did this; the spec now
   says so.
 - The capacity error is reported at `config`.
+
+## Appendix: manual traceability worksheet (Structure and `vpc.cidr`)
+
+Done by hand on Oct 25, 2026, before the fix pass. It describes the
+tests as they were then; the fix list above addresses each gap. The
+remaining requirements were audited by aider and spot-checked.
+
+Strength: strong = location + specific content; medium = one of them,
+or content that matches on every code path; weak = only "it raised".
+
+| # | Spec item | Test(s) | What it asserts | Strength | Coverage | Reason |
+| --- | --- | --- | --- | --- | --- | --- |
+| S1 | Top level must be a mapping | `test_missing_and_bad_top_level` (case 2: `[]`) | exactly 1 error; it starts with `config` | medium | partial | location + count, no content; list tested, string not |
+| S2 | Missing `vpc` or `tiers` is an error | `test_missing_and_bad_top_level` (case 1: `{}`) | `'vpc'` and `'tiers'` appear somewhere in the joined text | medium | partial | content only, no location or count; a wrong message like "unknown key 'vpc'" would pass; only both-missing tested, never one |
+| S3 | Missing `cidr` or `azs` is an error | none | — | n/a | missing | no test omits these keys |
+| S4 | Exactly one of `prefix`/`hosts` | `test_prefix_and_hosts_both`, `test_prefix_and_hosts_neither` | "not both" / "needs 'prefix' or 'hosts'" in the message | medium | full | content checked; no location check |
+| S5 | Unknown keys error, with a "did you mean" hint | `test_prefix_typo_hint`, `test_many_mistakes_reported_together` | hint text present; location `tiers[0] (public)` appears in the multi-error test | medium | partial | only a tier-level typo with a close match is tested |
+| S6 | An empty file gets its own message | `test_load_empty_file` | "empty" in the message | medium | full | content only |
+| C1 | `vpc.cidr` must be a string | `test_cidr_not_a_string` | `vpc.cidr` location and "string" in the message | strong | partial | only an int tested; YAML can also give a list, bool or `None` |
+| C2 | Only the `a.b.c.d/nn` form; netmask, hostmask and bare addresses rejected, with the `/nn` form shown | `test_cidr_forms_rejected` | `vpc.cidr` location; "a.b.c.d/nn" in the message | medium | partial | every branch of the message contains "a.b.c.d/nn", so the check passes whichever hint was chosen; it should assert the hint itself, e.g. "e.g. 10.0.0.0/16" |
+| C3 | Host bits set → suggestion | `test_host_bits_suggests_network` | location `vpc.cidr` + the suggested CIDR | strong | full | location + specific fix |
+| C4 | VPC prefix between /16 and /28 | `test_vpc_prefix_range` | "/16 to /28" in a message; only /12 and /29 tested | medium | partial | /29 rejected is tested; missing /15 rejected (/12 can't catch an off-by-one at the lower edge) and /16, /28 accepted |
+| C5 | 5 excluded ranges; message names the range and why | `test_excluded_range` | multicast range in the message | medium | partial | only 1 of 5 ranges; loopback, link-local, reserved and this-network untested |
+| C6 | Public ranges are allowed | `test_public_range_allowed` | no assert; an exception would fail the test, so "does not raise" is the check | weak | partial | one sample; the returned `Config` isn't checked |

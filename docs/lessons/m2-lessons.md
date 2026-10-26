@@ -75,18 +75,101 @@ went right and is worth repeating).
 - **Rule:** stage first, then review with `git diff --cached`.
 
 
-### `traceability check` mapping spec items to tests one by one
-| # | Spec item | Test(s) | What it asserts | Assertion Strength | coverage | Reason |
-| --------- | --------- | ------- | --------------- | ----------- |----------- | ----------- |
-|S1 | Top level must be a mapping |test_missing_and_bad_top_level (case 2: [])|exactly 1 error; it starts with config| medium| partial  |location + count, no content; list tested, string not|
-|S2 |Missing vpc or tiers is an error|test_missing_and_bad_top_level (case 1: {})|'vpc' and 'tiers' appear somewhere in the joined text|medium| partial |content only, no location or count; a wrong message like “unknown key ‘vpc’” would pass; only both-missing tested, never one|
-|S3 |Missing cidr or azs is an error|none |- | n/a | missing|?|
-|S4 | Exactly one of prefix/hosts|ttest_prefix_and_hosts_both, test_prefix_and_hosts_neither| “not both” / “needs ‘prefix’ or ‘hosts’” in the message|medium|full|content checked; no location check |
-|S5 |Unknown keys error, with a “did you mean” hint |test_prefix_typo_hint, test_many_mistakes_reported_together| hint text present; location tiers[0] (public) appears in the multi-error test|medium|partial| only a tier-level typo with a close match is tested|
-|S6 |An empty file gets its own message|test_load_empty_file|"empty" is in the message |medium|full| content only|
-|C1 |`vpc.cidr` must be a string|test_cidr_not_a_string.|vpc.cidr location and "string" in message| strong |partial| only tested case for int type, YAML may produce other types not caught by test |
-|C2 | only the `a.b.c.d/nn` form. Netmask ,hostmask and bare addresses results in errors that show the '`/nn` form.|test_cidr_forms_rejected|vpc.cidr location "expected values" in message content|strong|partial||
-|C3 | Host bits → suggestion |test_host_bits_suggests_network|  location vpc.cidr + the suggested CIDR| strong | full |location + specific fix|
-|C4 |VPC prefix between /16 and /28|test_vpc_prefix_range|any("/16 to /28") in message|medium|partial|test for values /15 and /29 in case a < instead of <=  for off-by-one mistakes|
-|C5 |Exclude 5 ranges and the message names the range and why|test_excluded_range| multicast address is in message|medium|partial|only test 1 of 5 cases, missing loopback, link-local, reserved and this network|
-|C6 |public ranges are allowed|test_public_range_allowed|If validate rejected it, the ConfigError would fail the test. So "does not raise" is the assertion, even though there is no assert statement.|weak|partial|only one sample is tested and result is not checked directly|
+## Oct 25–26, 2026
+
+### Traceability check found what 41 passing tests didn't (`worked`)
+- **Worksheet:** appendix of `docs/reviews/m2-stage1-tests.md`.
+- **What:** mapped each spec requirement to its tests, rating coverage
+  (full / partial / missing) and assertion strength (strong = location
+  + specific content; medium; weak = "it raised"). One third of the
+  requirements gave 11 findings.
+- **Rule:** passing tests show the code does what the tests check; only
+  mapping against the spec shows the tests check what the spec requires.
+  Gaps hide next to a tested case: list vs. string, one key missing vs.
+  both, close match vs. no match.
+
+### Tautological assertion (`agent`)
+- **Symptom:** `assert 2 ** (32 - 23) - 5 == 507` in `test_hosts_resolution`.
+- **Cause:** only literals, so it can't fail. The agent was covering the
+  spec's "(507 usable)" when Stage 1 had no API reporting usable hosts.
+- **Rule:** trace every value in an assertion to its source; at least one
+  side must come from the code under test. If deleting `ipam.py` wouldn't
+  break it, it tests nothing.
+
+### Non-discriminating and can't-fail-for-its-purpose tests (`agent`)
+- **Symptom:** `test_cidr_forms_rejected` checked a substring every branch
+  of the message code produced. `test_prefix_vs_vpc_skipped_when_vpc_invalid`
+  used VPC `"nope"`, which has no prefix to compare, so it passed whether
+  or not the comparison was skipped.
+- **Rule:** a check must be able to tell the right behavior from a
+  plausible wrong one. Ask: what bug would make this pass anyway?
+
+### Rejection tests only (`agent`)
+- **Symptom:** nearly every test fed bad input and expected an error.
+- **Cause:** a validator that rejects everything satisfies them all.
+- **Rule:** validators fail in two directions; test acceptance too,
+  especially at boundaries (/16 and /28 accepted, /15 and /29 rejected).
+
+### Delegated audit, spot-checked (`worked`)
+- **What:** gave aider the rubric with `/ask` for the remaining
+  requirements, demanding quoted assert lines. Spot-checked 6 claims:
+  5 right (incl. two finds I'd missed); 1 "strong" rating too generous;
+  its reason column contradicted its rating.
+- **Rule:** ask agents to quote, so claims can be grepped. Use a control
+  (a finding you already know) to calibrate trust. Read reasons against
+  verdicts.
+
+### Spec vs. code on error order (`process`)
+- **What:** the test expected `config` (from the last key, `extra`)
+  first, contradicting "document order". The code's rule (a mapping's
+  own problems first) is better: a missing key has no document position.
+- **Rule:** when a test disagrees with the spec, decide which is right;
+  don't just "fix the test". Here the spec changed.
+
+### Manual search missed two acceptance tests (`process`)
+- **Symptom:** I searched for `config = validate(` and field access;
+  `assert validate(base()) == EXAMPLE_CONFIG` has neither.
+- **Rule:** search for the call itself, then filter out known-rejection
+  patterns. Verify agent "already done" claims too; this one was right.
+
+### Stage 1 was never committed (`git`, `process`)
+- **Symptom:** `git status` before mutation checks: `cidrwright/` and
+  `tests/` untracked.
+- **Cause:** commit step skipped; `git restore` can't recover untracked
+  files, so the mutations would have had no undo. Also, Stage 1 and the
+  fix pass went into one commit, so git couldn't show whether the fix
+  pass changed `ipam.py`.
+- **Rule:** "working tree clean" before any experiment. Separate commits
+  are what let you check an agent's claims about what it changed.
+
+### Mutation checks: 4 of 4 caught, predictions exact (`worked`)
+- **What:** `+4→+5`, bool check removed, clamp `28→29`, multicast range
+  removed. Each failed exactly the predicted cases. The bool mutation was
+  caught by a test the review had strengthened.
+- **Rule:** predict the failing cases first ("test X, case Y, because Z").
+  Overlapping rules hide a missing rule (the range check still rejected
+  `prefix: True`); only content checks catch that. Mutations caught by a
+  single case show where property tests are needed.
+
+### Editor departed from the approved plan, three times (`agent`)
+- **Symptom:** `test_excluded_ranges` renamed; an added `got` parameter
+  in `test_bad_hosts_rejected`; `test_quote_hint_for_numbers` merged into
+  two existing tests. All reasonable, none announced.
+- **Rule:** read the diff against the plan; check planned tests exist by
+  content, not name; check for duplicate test names. Ask the agent to
+  list departures at the end of its reply.
+
+### The aider log as a record of edits (`process`)
+- **What:** `Applied edit to <file>` lines in `.aider.chat.history.md`
+  showed `ipam.py` wasn't touched by the fix pass, and that the test
+  file was edited in two rounds (a re-sent plan).
+- **Rule:** when commits can't show what changed, the chat log can.
+
+### Terminology: "prefix" (`process`)
+- `/24` is written after the address but denotes the *prefix length*:
+  the number of leading bits that identify the network. Kept the YAML
+  key `prefix`; docstrings say "prefix length".
+
+### `.DS_Store` in every repo (`env`)
+- **Rule:** ignore it once, globally:
+  `git config --global core.excludesFile ~/.gitignore_global`.
