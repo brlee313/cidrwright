@@ -73,3 +73,20 @@ went right and is worth repeating).
 ### `git diff` shows nothing for new files (`git`)
 - **Cause:** it compares tracked files only.
 - **Rule:** stage first, then review with `git diff --cached`.
+
+
+### `traceability check` mapping spec items to tests one by one
+| # | Spec item | Test(s) | What it asserts | Assertion Strength | coverage | Reason |
+| --------- | --------- | ------- | --------------- | ----------- |----------- | ----------- |
+|S1 | Top level must be a mapping |test_missing_and_bad_top_level (case 2: [])|exactly 1 error; it starts with config| medium| partial  |location + count, no content; list tested, string not|
+|S2 |Missing vpc or tiers is an error|test_missing_and_bad_top_level (case 1: {})|'vpc' and 'tiers' appear somewhere in the joined text|medium| partial |content only, no location or count; a wrong message like “unknown key ‘vpc’” would pass; only both-missing tested, never one|
+|S3 |Missing cidr or azs is an error|none |- | n/a | missing|?|
+|S4 | Exactly one of prefix/hosts|ttest_prefix_and_hosts_both, test_prefix_and_hosts_neither| “not both” / “needs ‘prefix’ or ‘hosts’” in the message|medium|full|content checked; no location check |
+|S5 |Unknown keys error, with a “did you mean” hint |test_prefix_typo_hint, test_many_mistakes_reported_together| hint text present; location tiers[0] (public) appears in the multi-error test|medium|partial| only a tier-level typo with a close match is tested|
+|S6 |An empty file gets its own message|test_load_empty_file|"empty" is in the message |medium|full| content only|
+|C1 |`vpc.cidr` must be a string|test_cidr_not_a_string.|vpc.cidr location and "string" in message| strong |partial| only tested case for int type, YAML may produce other types not caught by test |
+|C2 | only the `a.b.c.d/nn` form. Netmask ,hostmask and bare addresses results in errors that show the '`/nn` form.|test_cidr_forms_rejected|vpc.cidr location "expected values" in message content|strong|partial||
+|C3 | Host bits → suggestion |test_host_bits_suggests_network|  location vpc.cidr + the suggested CIDR| strong | full |location + specific fix|
+|C4 |VPC prefix between /16 and /28|test_vpc_prefix_range|any("/16 to /28") in message|medium|partial|test for values /15 and /29 in case a < instead of <=  for off-by-one mistakes|
+|C5 |Exclude 5 ranges and the message names the range and why|test_excluded_range| multicast address is in message|medium|partial|only test 1 of 5 cases, missing loopback, link-local, reserved and this network|
+|C6 |public ranges are allowed|test_public_range_allowed|If validate rejected it, the ConfigError would fail the test. So "does not raise" is the assertion, even though there is no assert statement.|weak|partial|only one sample is tested and result is not checked directly|
