@@ -2,7 +2,7 @@ import ipaddress
 
 import pytest
 
-from cidrwright.ipam import Config, ConfigError, Tier, load_config, validate
+from cidrwright.ipam import Config, ConfigError, Tier, allocate, load_config, validate
 
 
 def base():
@@ -47,6 +47,11 @@ def write(tmp_path, text):
     path = tmp_path / "net.yaml"
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def placed(result):
+    """(tier, az, cidr) for each allocation, in the dict's order."""
+    return [(a.tier, a.az, str(a.network)) for a in result.values()]
 
 
 def test_example_validates():
@@ -633,3 +638,155 @@ def test_load_rejects_python_tag(tmp_path):
 def test_load_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "nope.yaml")
+
+
+# ------------------------------------------------------------ allocation
+
+
+def test_allocate_example_table():
+    result = allocate(validate(base()))
+    expected = [
+        ("private", "a", "10.0.0.0/23", 507),
+        ("private", "b", "10.0.2.0/23", 507),
+        ("private", "c", "10.0.4.0/23", 507),
+        ("public", "a", "10.0.6.0/24", 251),
+        ("public", "b", "10.0.7.0/24", 251),
+        ("public", "c", "10.0.8.0/24", 251),
+        ("database", "a", "10.0.9.0/26", 59),
+        ("database", "b", "10.0.9.64/26", 59),
+        ("database", "c", "10.0.9.128/26", 59),
+    ]
+    assert list(result) == [(tier, az) for tier, az, _, _ in expected]
+    got = [(a.tier, a.az, str(a.network), a.usable_hosts) for a in result.values()]
+    assert got == expected
+
+
+def test_allocate_m1_regression():
+    data = {
+        "vpc": {"cidr": "10.0.0.0/16", "azs": ["a", "b", "c", "d", "e"]},
+        "tiers": [
+            {"name": "public", "prefix": 24},
+            {"name": "private", "prefix": 24},
+            {"name": "database", "prefix": 24},
+        ],
+    }
+    result = allocate(validate(data))
+    # Same size: YAML tier order (public, private, database), not alphabetical.
+    expected = [
+        ("public", "a", "10.0.0.0/24"),
+        ("public", "b", "10.0.1.0/24"),
+        ("public", "c", "10.0.2.0/24"),
+        ("public", "d", "10.0.3.0/24"),
+        ("public", "e", "10.0.4.0/24"),
+        ("private", "a", "10.0.5.0/24"),
+        ("private", "b", "10.0.6.0/24"),
+        ("private", "c", "10.0.7.0/24"),
+        ("private", "d", "10.0.8.0/24"),
+        ("private", "e", "10.0.9.0/24"),
+        ("database", "a", "10.0.10.0/24"),
+        ("database", "b", "10.0.11.0/24"),
+        ("database", "c", "10.0.12.0/24"),
+        ("database", "d", "10.0.13.0/24"),
+        ("database", "e", "10.0.14.0/24"),
+    ]
+    assert placed(result) == expected
+    assert list(result) == [(t, az) for t, az, _ in expected]
+    networks = [a.network for a in result.values()]
+    assert len(set(networks)) == 15
+    assert networks.count(ipaddress.IPv4Network("10.0.4.0/24")) == 1
+
+
+def test_allocate_az_yaml_order_not_alphabetical():
+    data = {
+        "vpc": {"cidr": "10.0.0.0/16", "azs": ["c", "a", "b"]},
+        "tiers": [
+            {"name": "web", "prefix": 24},
+            {"name": "db", "prefix": 26},
+        ],
+    }
+    result = allocate(validate(data))
+    assert placed(result) == [
+        ("web", "c", "10.0.0.0/24"),
+        ("web", "a", "10.0.1.0/24"),
+        ("web", "b", "10.0.2.0/24"),
+        ("db", "c", "10.0.3.0/26"),
+        ("db", "a", "10.0.3.64/26"),
+        ("db", "b", "10.0.3.128/26"),
+    ]
+
+
+def test_allocate_mixed_sizes_aligned():
+    vpc = ipaddress.IPv4Network("10.0.16.0/20")  # does not start at 10.0.0.0
+    data = {
+        "vpc": {"cidr": str(vpc), "azs": ["a", "b", "c"]},
+        "tiers": [  # YAML order: smallest first
+            {"name": "db", "prefix": 26},
+            {"name": "web", "prefix": 24},
+            {"name": "app", "prefix": 23},
+        ],
+    }
+    result = allocate(validate(data))
+    assert placed(result) == [
+        ("app", "a", "10.0.16.0/23"),
+        ("app", "b", "10.0.18.0/23"),
+        ("app", "c", "10.0.20.0/23"),
+        ("web", "a", "10.0.22.0/24"),
+        ("web", "b", "10.0.23.0/24"),
+        ("web", "c", "10.0.24.0/24"),
+        ("db", "a", "10.0.25.0/26"),
+        ("db", "b", "10.0.25.64/26"),
+        ("db", "c", "10.0.25.128/26"),
+    ]
+    for alloc in result.values():
+        assert int(alloc.network.network_address) % alloc.network.num_addresses == 0
+        assert alloc.network.subnet_of(vpc)
+
+
+def test_allocate_hosts_400_usable_hosts():
+    result = allocate(validate(one_tier({"name": "private", "hosts": 400})))
+    alloc = result[("private", "a")]
+    assert alloc.network == ipaddress.IPv4Network("10.0.0.0/23")
+    assert alloc.usable_hosts == 507
+
+
+def test_allocate_exactly_full():
+    data = one_tier(
+        {"name": "db", "prefix": 26}, cidr="10.0.0.0/24", azs=("a", "b", "c", "d")
+    )
+    result = allocate(validate(data))
+    assert placed(result) == [
+        ("db", "a", "10.0.0.0/26"),
+        ("db", "b", "10.0.0.64/26"),
+        ("db", "c", "10.0.0.128/26"),
+        ("db", "d", "10.0.0.192/26"),
+    ]
+
+
+def test_allocate_rechecks_capacity():
+    config = Config(
+        ipaddress.IPv4Network("10.0.0.0/24"),
+        ("a", "b", "c", "d"),
+        (Tier("db", 26), Tier("tiny", 28)),
+    )
+    with pytest.raises(ConfigError) as info:
+        allocate(config)
+    errs = info.value.errors
+    assert len(errs) == 1
+    assert errs[0].startswith("config: ")
+    assert "capacity exceeded" in errs[0]
+    assert "need 320 addresses" in errs[0]
+    assert "has 256" in errs[0]
+
+
+def test_allocate_rechecks_tier_prefix_vs_vpc():
+    config = Config(
+        ipaddress.IPv4Network("10.0.0.0/20"),
+        ("a",),
+        (Tier("web", 24), Tier("big", 19)),
+    )
+    with pytest.raises(ConfigError) as info:
+        allocate(config)
+    errs = info.value.errors
+    assert len(errs) == 1  # capacity check skipped, though it would also fail
+    assert errs[0].startswith("tiers[1] (big): ")
+    assert "prefix /19 is larger than the VPC /20" in errs[0]

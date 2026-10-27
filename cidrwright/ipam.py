@@ -1,8 +1,7 @@
 """Subnet allocator for cidrwright.
 
-Reads a YAML network description, validates all of it, and (from M2
-stage 2) returns one IPv4 CIDR per (tier, AZ), packed with no overlap
-and no gaps.
+Reads a YAML network description, validates all of it, and returns one
+IPv4 CIDR per (tier, AZ), packed with no overlap and no gaps.
 
 Subnets are laid out by size, largest first, not in YAML order: a tier
 listed later in the YAML can come first in the address space.
@@ -59,8 +58,10 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class Tier:
+    """One subnet tier. `prefix` is the prefix length (24 means a /24)."""
+
     name: str
-    prefix: int  # resolved, even if given as hosts
+    prefix: int  # prefix length, resolved even if given as hosts
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,13 @@ def _key_errors(
 def _hosts_to_prefix(hosts: int) -> int:
     """Largest p with 2**(32 - p) - 5 >= hosts, clamped to MAX_PREFIX."""
     return min(32 - (hosts + 4).bit_length(), MAX_PREFIX)
+
+
+def _prefix_vs_vpc_error(label: str, prefix: int, vpc_prefix: int) -> str:
+    return (
+        f"{label}: prefix /{prefix} is larger than the VPC /{vpc_prefix}; "
+        f"use /{vpc_prefix} to /{MAX_PREFIX}"
+    )
 
 
 def _capacity_error(
@@ -257,10 +265,7 @@ def _check_prefix(value: object, vpc_prefix: int | None, label: str) -> tuple[in
             f"/{MIN_PREFIX} to /{MAX_PREFIX}"
         ]
     if vpc_prefix is not None and value < vpc_prefix:
-        return None, [
-            f"{label}: prefix /{value} is larger than the VPC /{vpc_prefix}; "
-            f"use /{vpc_prefix} to /{MAX_PREFIX}"
-        ]
+        return None, [_prefix_vs_vpc_error(label, value, vpc_prefix)]
     return value, []
 
 
@@ -370,6 +375,47 @@ def validate(data: object) -> Config:
         raise ConfigError(errors)
     assert vpc is not None and azs is not None and tiers is not None
     return Config(vpc=vpc, azs=azs, tiers=tuple(tiers))
+
+
+def allocate(config: Config) -> dict[tuple[str, str], Allocation]:
+    """Return one Allocation per (tier name, AZ), keyed by (tier, az).
+
+    Each tier's `prefix` is a prefix length (24 means a /24). Requests are
+    placed end to end from the VPC network address, sorted by prefix
+    length ascending (largest subnet first), then by the tier's position,
+    then by the AZ's position. The dict's insertion order is address order.
+
+    Re-checks that every tier prefix length is at least the VPC's and that
+    everything fits, because a Config can be built without validate().
+    Raises ConfigError if either check fails.
+    """
+    vpc = config.vpc
+    errors = [
+        _prefix_vs_vpc_error(f"tiers[{i}] ({tier.name})", tier.prefix, vpc.prefixlen)
+        for i, tier in enumerate(config.tiers)
+        if tier.prefix < vpc.prefixlen
+    ]
+    if not errors:  # as in validate(): skip capacity when a tier is invalid
+        cap = _capacity_error(vpc, config.azs, config.tiers)
+        if cap:
+            errors.append(cap)
+    if errors:
+        raise ConfigError(errors)
+
+    requests = sorted(
+        (tier.prefix, ti, ai, tier.name, az)
+        for ti, tier in enumerate(config.tiers)
+        for ai, az in enumerate(config.azs)
+    )
+    result: dict[tuple[str, str], Allocation] = {}
+    addr = int(vpc.network_address)
+    for prefix, _, _, name, az in requests:
+        net = ipaddress.IPv4Network((addr, prefix))
+        result[(name, az)] = Allocation(
+            tier=name, az=az, network=net, usable_hosts=net.num_addresses - AWS_RESERVED
+        )
+        addr += net.num_addresses
+    return result
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
