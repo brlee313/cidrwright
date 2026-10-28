@@ -10,6 +10,10 @@ Starting point: 41 tests passing.
 
 ## Rules for the fix pass
 
+> These rules, with later additions, now live in
+> `docs/testing-guidelines.md`. The list below is kept as it was used for
+> this fix pass.
+
 - **Tests only**, unless a new test exposes code that breaks the spec.
   Then fix the code minimally and list every code change separately, so
   it can be reviewed on its own.
