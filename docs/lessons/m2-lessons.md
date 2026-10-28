@@ -173,3 +173,96 @@ went right and is worth repeating).
 ### `.DS_Store` in every repo (`env`)
 - **Rule:** ignore it once, globally:
   `git config --global core.excludesFile ~/.gitignore_global`.
+
+## Oct 26–28, 2026 (Stage 2)
+
+### Homebrew wanted to compile `gh` from source (`env`)
+- **Symptom:** `brew upgrade gh` → "Homebrew no longer builds bottles for
+  this configuration ... Would install 1 dependency: go ... 1 formula that
+  would build from source".
+- **Cause:** Intel (x86_64) Mac; Homebrew dropped Intel bottles in
+  Sept 2026. Every upgrade now means a local compile plus new toolchains.
+- **Rule:** answer `n`; don't change tools mid-stage. For CLIs, prefer the
+  vendor's own macOS amd64/universal builds. Plan Terraform and AWS CLI
+  installs (M5) around this.
+
+### Hand-made answer key before prompting (`worked`)
+- **What:** packed the spec example largest-first by hand (cursor,
+  align up to the block size, advance) before seeing aider's plan. It matched the
+  spec's table and later aider's tests.
+- **Symptom along the way:** `10.0.0.2.0/23` (five octets), `10 0.7.0/24`,
+  and a table row missing a cell.
+- **Rule:** an answer key must be exact to the character, like the tests
+  it checks. Preview tables (Cmd+Shift+V); validate CIDRs with
+  `ipaddress.ip_network`. Don't show the key to the agent: the value is
+  two independent computations agreeing.
+
+### First plan couldn't detect wrong sort rules (`agent`)
+- **Symptom:** every test used AZs `a, b, c...` (already alphabetical) and
+  tiers of different sizes; the M1 test only checked
+  `count(10.0.4.0/24) == 1`; every VPC started at `10.0.0.0`.
+- **Cause:** test inputs where the correct rule and plausible wrong rules
+  give the same answer. Mutations A, B, C2 would all have passed.
+- **Rule:** a test catches a bug only if the buggy and correct code
+  disagree on its input. Choose inputs that separate the rules: AZs
+  `[c, a, b]`, same-size tiers listed non-alphabetically, a VPC that
+  doesn't start at 10.0.0.0. Check *who* got each address, not just which
+  addresses were used.
+
+### Review prompted a refactor, not just tests (`worked`)
+- **What:** `allocate` had copied `validate`'s "prefix /N is larger than
+  the VPC" f-string. The revised plan moved it into
+  `_prefix_vs_vpc_error`, used by both. Grep of the label construction
+  (line 311: `label = f"{label} ({value})"`) confirmed both functions
+  report `tiers[i] (name)`.
+- **Rule:** duplicated message text is the copy-paste drift from M1 Q6 in
+  miniature. One helper per message. Cost of two plan rounds: $0.27.
+
+### Stage 2 mutations: 5 of 5 caught, all predicted (`worked`)
+
+| # | Mutation in `allocate` | Caught by | Result |
+| --- | --- | --- | --- |
+| A | same-size tiers sorted by name (`ti` → `tier.name`) | `test_allocate_m1_regression` | 1 failed |
+| B | AZs sorted by name (`ai` → `az`) | `test_allocate_az_yaml_order_not_alphabetical` | 1 failed |
+| C1 | `addr = 0` | all 6 successful-allocation tests | 6 failed |
+| C2 | `addr = 10.0.0.0` hard-coded | `test_allocate_mixed_sizes_aligned` (VPC 10.0.16.0/20) | 1 failed |
+| D | re-check `raise` deleted | both re-check tests, `DID NOT RAISE` | 2 failed |
+| E | `- AWS_RESERVED` → `- 4` | example table, `hosts_400` (508 vs 507) | 2 failed |
+
+- **Prediction slips:** named database *e* at index 0 under A (AZ order
+  was unchanged, so database *a*); predicted D failing at the `errs`
+  asserts (they never run: `pytest.raises` fails first when nothing
+  raises); in pytest's diff, the left side is what the code produced.
+- **Rule:** A, B, C2 have a single test of defense. Stage 3 properties
+  must vary AZ order, tier order among equal sizes, and VPC base address.
+
+### Tests failed after `git restore` with a clean tree (`env`)
+- **Symptom:** `git restore`, `git status` → "working tree clean", then
+  pytest failed exactly as under the mutation.
+- **Cause:** most likely VS Code still held the mutated buffer and saved
+  it back to disk on focus change, after `git status` ran.
+- **Rule:** undo mutations in the editor (Cmd+Z, save), not with
+  `git restore`. Chain the check to the run:
+  `git diff --stat; .venv/bin/python -m pytest -q`.
+
+### pytest's short summary hid the difference (`process`)
+- **Symptom:** `[('db', 'a', ....0.0.192/26')] == [('db', 'a', ....0.0.192/26')]`.
+- **Cause:** the summary truncates both sides; here it cut exactly the
+  differing part (`0.0.0.0` vs `10.0.0.0`).
+- **Rule:** the summary says *which* tests failed; read the `At index N
+  diff:` line, or rerun one test with `-v`, for *why*.
+
+### Git's pager looked like a hang (`env`)
+- **Symptom:** `git diff` stopped with `:` at the bottom.
+- **Cause:** output longer than the screen goes to `less`.
+- **Rule:** Space/b/q to page; `git diff --stat` first;
+  `git --no-pager diff <file>` to print straight to the terminal.
+
+### "5 reserved" written three ways (`process`)
+- **What:** `AWS_RESERVED = 5` (used by `allocate` and an error message),
+  `- 5` in the `_hosts_to_prefix` docstring, and a literal `+ 4` in its
+  formula. The `+ 4` is the same rule: N hosts need N + 5 addresses, and
+  the smallest power of two ≥ n is `2 ** (n - 1).bit_length()`.
+- **Rule:** one constant per fact. Candidate cleanup:
+  `32 - (hosts + AWS_RESERVED - 1).bit_length()`. Stage 1 mutation 1 and
+  Stage 2 mutation E guard the two halves.
