@@ -1,8 +1,9 @@
 # M2 design: ipam.py subnet allocator
 
 Status: revised Oct 23, 2026 after architect review; error-order rule
-clarified Oct 25, 2026 after the Stage 1 test audit. Input for aider
-architect mode. Background and reasons: `docs/recon/terraform-aws-vpc.md`.
+clarified Oct 25, 2026 after the Stage 1 test audit; Stage 2 decisions
+folded in Oct 28, 2026. Input for aider architect mode. Background and
+reasons: `docs/recon/terraform-aws-vpc.md`.
 
 ## Scope
 
@@ -115,10 +116,12 @@ AWS reserves 5 addresses in every subnet (network, +1 router, +2 DNS,
 
 1. Re-check capacity and that every tier prefix is at least the VPC
    prefix (a `Config` can be built without `validate`). Raise
-   `ConfigError` if either fails.
+   `ConfigError` if either fails. As in `validate`, skip the capacity
+   check when a tier prefix fails. Errors use the same locations as
+   `validate` (`tiers[1] (big)`, `config`).
 2. Expand to one request per (tier, AZ).
 3. Sort by prefix ascending (largest subnet first), then by the tier's
-   YAML position, then the AZ's YAML position.
+   YAML position, then the AZ's YAML position. Never by name.
 4. Place requests end to end from the VPC network address.
 
 Because every size is a power of two and larger blocks come first, each
@@ -144,7 +147,7 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Tier:
     name: str
-    prefix: int                 # resolved, even if given as hosts
+    prefix: int                 # prefix length, resolved even if given as hosts
 
 @dataclass(frozen=True)
 class Config:
@@ -181,11 +184,19 @@ def allocate(config: Config) -> dict[tuple[str, str], Allocation]: ...
 ### Example-based
 
 - The example YAML gives exactly the table above.
-- **M1 regression:** a /16 with 5 AZs and three /24 tiers gives 15
-  distinct CIDRs; `10.0.4.0/24` appears exactly once.
-- Mixed /23, /24 and /26 tiers all come out aligned.
+- **M1 regression:** a /16 with 5 AZs and three /24 tiers gives the 15
+  CIDRs written out in address order (tiers in YAML order, not
+  alphabetical); `10.0.4.0/24` appears exactly once.
+- Mixed /23, /24 and /26 tiers, listed smallest first, in a VPC that
+  doesn't start at 10.0.0.0 (`10.0.16.0/20`): exact CIDRs, all aligned
+  and inside the VPC.
+- AZs listed out of alphabetical order (`[c, a, b]`) are placed in YAML
+  order.
+- `allocate` re-checks a hand-built `Config`: capacity exceeded, and a
+  tier prefix larger than the VPC (reported alone, capacity skipped).
 - `hosts: 400` → /23 (507 usable); `hosts: 1` → /28; `hosts: 11` → /28;
   `hosts: 12` → /27.
+- `hosts: 400` gives `usable_hosts == 507` from a real `Allocation`.
 - One config with about six mistakes reports all of them in one
   `ConfigError`.
 - Capacity: a /24 VPC with 4 AZs and one /26 tier (exactly full)
@@ -200,9 +211,14 @@ def allocate(config: Config) -> dict[tuple[str, str], Allocation]: ...
 **Generator.** Build configs that fit by construction (choose sizes
 within the remaining space) rather than generating at random and
 filtering, which starves Hypothesis of examples. Keep a second, smaller
-strategy that can overflow, for the capacity property. VPC: /16–/24,
-not in the excluded ranges; 1–6 AZs; 1–7 tiers; some tiers given as
-`hosts`. Feed dicts through `validate`, then `allocate`.
+strategy that can overflow, for the capacity property. VPC: /16–/24 at
+any aligned base address (not only 10.0.0.0), not in the excluded
+ranges; 1–6 AZs; 1–7 tiers; some tiers given as `hosts`. AZ keys and
+tier names must be drawn in arbitrary order (not generated sorted), and
+the generator must be able to produce several tiers of the same size.
+Without these, a sort by name or a hard-coded start address passes every
+property (Stage 2 mutations A, B and C2). Feed dicts through `validate`,
+then `allocate`.
 
 **Properties** of every fitting config:
 

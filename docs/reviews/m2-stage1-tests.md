@@ -21,6 +21,10 @@ Starting point: 41 tests passing.
   that every branch of the message code produces doesn't count.
 - Use `pytest.mark.parametrize` for families of cases.
 - Public API only; no helpers starting with `_`.
+- Choose inputs where the correct rule and plausible wrong rules give
+    different answers: AZs and same-size tiers listed in non-alphabetical
+    order, a VPC that doesn't start at 10.0.0.0. Check (tier, az, cidr)
+    together, not just the set or count of CIDRs.
 
 ## A. Tests that can't fail
 
