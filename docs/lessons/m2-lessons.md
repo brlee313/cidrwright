@@ -238,12 +238,14 @@ went right and is worth repeating).
 
 ### Tests failed after `git restore` with a clean tree (`env`)
 - **Symptom:** `git restore`, `git status` → "working tree clean", then
-  pytest failed exactly as under the mutation.
-- **Cause:** most likely VS Code still held the mutated buffer and saved
-  it back to disk on focus change, after `git status` ran.
-- **Rule:** undo mutations in the editor (Cmd+Z, save), not with
-  `git restore`. Chain the check to the run:
-  `git diff --stat; .venv/bin/python -m pytest -q`.
+  pytest failed exactly as under the mutation. A second restore fixed it.
+- **Cause:** unconfirmed. Something wrote the mutated text back between
+  `git status` and pytest. VS Code Auto Save is off (refactoring auto-save
+  and test discovery on save don't write edits), so most likely a manual
+  undo/save in the open tab, which can step back past a reload from disk.
+- **Rule:** undo a mutation with one tool: in the editor (Cmd+Z, save) and
+  confirm with git. Don't mix `git restore` with an open, editable tab.
+  Chain the check to the run: `git diff --stat; .venv/bin/python -m pytest -q`.
 
 ### pytest's short summary hid the difference (`process`)
 - **Symptom:** `[('db', 'a', ....0.0.192/26')] == [('db', 'a', ....0.0.192/26')]`.
