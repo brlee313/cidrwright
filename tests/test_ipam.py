@@ -1,6 +1,8 @@
 import ipaddress
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from cidrwright.ipam import Config, ConfigError, Tier, allocate, load_config, validate
 
@@ -790,3 +792,290 @@ def test_allocate_rechecks_tier_prefix_vs_vpc():
     assert len(errs) == 1  # capacity check skipped, though it would also fail
     assert errs[0].startswith("tiers[1] (big): ")
     assert "prefix /19 is larger than the VPC /20" in errs[0]
+
+
+# ------------------------------------------------------------ properties
+
+
+def usable(p):
+    return 2 ** (32 - p) - 5
+
+
+# h = 2**k - 5 is where usable(32 - k) == h exactly; also one on each side.
+# Written out by the formula here, not derived from ipam.py.
+BOUNDARY_HOSTS = sorted(
+    {2**k - 5 + d for k in range(4, 17) for d in (-1, 0, 1)} & set(range(1, 65532))
+)
+
+EXCLUDED = [
+    ipaddress.IPv4Network(n)
+    for n in (
+        "0.0.0.0/8",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+    )
+]
+
+# Drawn in arbitrary order (not sorted), so a sort by name passes nothing.
+NAME = st.from_regex(r"[a-z][a-z0-9_-]{0,7}", fullmatch=True)
+
+
+@st.composite
+def vpc_networks(draw, lo=16, hi=24):
+    """A VPC at any aligned base address, outside the excluded ranges."""
+    prefix = draw(st.integers(lo, hi))
+    slot = draw(st.integers(0, 2**prefix - 1))
+    net = ipaddress.IPv4Network((slot << (32 - prefix), prefix))
+    return net
+
+
+VPCS = lambda lo=16, hi=24: vpc_networks(lo, hi).filter(  # noqa: E731
+    lambda n: not any(n.overlaps(x) for x in EXCLUDED)
+)
+
+
+@st.composite
+def fitting_data(draw):
+    """A config dict that fits by construction (sizes chosen within space)."""
+    vpc = draw(VPCS())
+    azs = draw(st.lists(NAME, min_size=1, max_size=6, unique=True))
+    budget = vpc.num_addresses // len(azs)  # addresses per AZ
+    prefixes = []
+    for _ in range(draw(st.integers(1, 7))):
+        # smallest prefix whose block still fits in the remaining budget
+        lo = max(vpc.prefixlen, 16, 33 - budget.bit_length())
+        if lo > 28:
+            break
+        if prefixes and prefixes[-1] >= lo and draw(st.booleans()):
+            p = prefixes[-1]  # repeat a size, to get several same-size tiers
+        else:
+            p = draw(st.integers(lo, 28))
+        prefixes.append(p)
+        budget -= 2 ** (32 - p)
+    names = draw(
+        st.lists(NAME, min_size=len(prefixes), max_size=len(prefixes), unique=True)
+    )
+    tiers = []
+    for name, p in zip(names, prefixes):
+        if draw(st.booleans()):
+            lo_h = 1 if p == 28 else usable(p + 1) + 1
+            hi_h = usable(p)
+            hosts = draw(
+                st.one_of(st.integers(lo_h, hi_h), st.sampled_from([lo_h, hi_h]))
+            )
+            tiers.append({"name": name, "hosts": hosts})
+        else:
+            tiers.append({"name": name, "prefix": p})
+    return {"vpc": {"cidr": str(vpc), "azs": azs}, "tiers": tiers}
+
+
+@st.composite
+def overflow_data(draw):
+    """A smaller strategy whose configs may or may not fit."""
+    vpc = draw(VPCS(20, 28))
+    azs = draw(st.lists(NAME, min_size=1, max_size=6, unique=True))
+    prefixes = draw(
+        st.lists(st.integers(vpc.prefixlen, 28), min_size=1, max_size=7)
+    )
+    names = draw(
+        st.lists(NAME, min_size=len(prefixes), max_size=len(prefixes), unique=True)
+    )
+    return {
+        "vpc": {"cidr": str(vpc), "azs": azs},
+        "tiers": [{"name": n, "prefix": p} for n, p in zip(names, prefixes)],
+    }
+
+
+def expected_prefix(tier):
+    """A tier dict's prefix length, by the definition of `hosts`."""
+    if "prefix" in tier:
+        return tier["prefix"]
+    return max(p for p in range(16, 29) if usable(p) >= tier["hosts"])
+
+
+def solve(data):
+    return allocate(validate(data))
+
+
+def by_address(result):
+    return sorted(result.values(), key=lambda a: int(a.network.network_address))
+
+
+@given(fitting_data())
+def test_prop_no_overlap(data):
+    # Bug: advancing `addr` once per tier instead of once per request (or
+    # deleting `addr += net.num_addresses`). Every AZ of a tier then gets
+    # the same network; all networks stay aligned, so nothing raises and
+    # only this pairwise check fails (whenever there are 2+ AZs).
+    nets = [a.network for a in solve(data).values()]
+    for i, first in enumerate(nets):
+        for second in nets[i + 1 :]:
+            assert not first.overlaps(second)
+
+
+@given(fitting_data())
+def test_prop_inside_vpc(data):
+    vpc = ipaddress.IPv4Network(data["vpc"]["cidr"])
+    lo = int(vpc.network_address)
+    hi = lo + vpc.num_addresses
+    for alloc in solve(data).values():
+        start = int(alloc.network.network_address)
+        assert lo <= start
+        assert start + alloc.network.num_addresses <= hi
+
+
+@given(fitting_data())
+def test_prop_aligned(data):
+    for alloc in solve(data).values():
+        assert int(alloc.network.network_address) % alloc.network.num_addresses == 0
+
+
+@given(fitting_data())
+def test_prop_no_gaps(data):
+    # Bug: advancing by twice the block size, or by the first (largest)
+    # block's size for every request. Each next address is still a
+    # multiple of every later size, so everything is aligned and the
+    # constructor doesn't raise; the gap shows at the first pair.
+    # Start-address variant: starting at the second aligned slot
+    # (vpc + 2**(32 - first prefix)) is aligned too; the first-start
+    # assertion below catches it.
+    vpc = ipaddress.IPv4Network(data["vpc"]["cidr"])
+    expected_start = int(vpc.network_address)
+    for alloc in by_address(solve(data)):
+        assert int(alloc.network.network_address) == expected_start
+        expected_start += alloc.network.num_addresses
+
+
+@given(fitting_data())
+def test_prop_placement_order(data):
+    tier_pos = {t["name"]: i for i, t in enumerate(data["tiers"])}
+    az_pos = {az: i for i, az in enumerate(data["vpc"]["azs"])}
+    keys = [
+        (a.network.prefixlen, tier_pos[a.tier], az_pos[a.az])
+        for a in by_address(solve(data))
+    ]
+    assert keys == sorted(keys)
+
+
+@given(fitting_data())
+def test_prop_one_allocation_per_tier_and_az(data):
+    result = solve(data)
+    expected = {
+        (t["name"], az): expected_prefix(t)
+        for t in data["tiers"]
+        for az in data["vpc"]["azs"]
+    }
+    assert len(result) == len(expected)
+    assert set(result) == set(expected)
+    for (tier, az), alloc in result.items():
+        assert alloc.tier == tier
+        assert alloc.az == az
+        assert alloc.network.prefixlen == expected[(tier, az)]
+
+
+@given(fitting_data())
+def test_prop_insertion_order_is_address_order(data):
+    starts = [int(a.network.network_address) for a in solve(data).values()]
+    assert starts == sorted(starts)
+
+
+@given(fitting_data())
+def test_prop_usable_hosts(data):
+    for alloc in solve(data).values():
+        assert alloc.usable_hosts == usable(alloc.network.prefixlen)
+        assert alloc.usable_hosts == alloc.network.num_addresses - 5
+
+
+FULL = {
+    "vpc": {"cidr": "10.0.0.0/24", "azs": ["a", "b", "c", "d"]},
+    "tiers": [{"name": "db", "prefix": 26}],
+}
+OVER_BY_A_28 = {
+    "vpc": {"cidr": "10.0.0.0/24", "azs": ["a", "b", "c", "d"]},
+    "tiers": [{"name": "db", "prefix": 26}, {"name": "tiny", "prefix": 28}],
+}
+
+
+@given(overflow_data())
+@example(FULL)
+@example(OVER_BY_A_28)
+def test_prop_capacity(data):
+    vpc = ipaddress.IPv4Network(data["vpc"]["cidr"])
+    needed = len(data["vpc"]["azs"]) * sum(
+        2 ** (32 - t["prefix"]) for t in data["tiers"]
+    )
+    config = Config(
+        vpc,
+        tuple(data["vpc"]["azs"]),
+        tuple(Tier(t["name"], t["prefix"]) for t in data["tiers"]),
+    )
+    if needed <= vpc.num_addresses:
+        assert validate(data) == config
+        assert len(allocate(config)) == len(data["tiers"]) * len(data["vpc"]["azs"])
+        return
+    errs = errors_of(data)
+    with pytest.raises(ConfigError) as info:
+        allocate(config)
+    for found in (errs, info.value.errors):
+        assert len(found) == 1
+        assert found[0].startswith("config: ")
+        assert "capacity" in found[0]
+        assert str(needed) in found[0]
+        assert str(vpc.num_addresses) in found[0]
+
+
+@given(st.one_of(st.integers(1, 65531), st.sampled_from(BOUNDARY_HOSTS)))
+@example(1)
+@example(2)
+@example(3)
+@example(11)
+@example(65531)
+def test_prop_hosts_resolution(h):
+    # Bug 1: (hosts + 5).bit_length() instead of (hosts + 4). The two differ
+    # only at h = 2**k - 5, where usable(32 - k) == h exactly but the bug
+    # returns one size too large (h = 11 gives /27; usable(28) == 11, so the
+    # third assertion fails). At h = 65531 the bug gives /15 and validate
+    # raises ConfigError instead. Uniform draws almost never hit these 13
+    # values, hence BOUNDARY_HOSTS.
+    # Bug 2: dropping the clamp to /28. For h = 1..3 the result is /29; only
+    # the `p <= 28` assertion catches it, hence examples 1, 2 and 3.
+    p = validate(one_tier({"name": "web", "hosts": h})).tiers[0].prefix
+    assert 16 <= p <= 28
+    assert usable(p) >= h
+    assert p == 28 or usable(p + 1) < h
+
+
+_LEAVES = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(),
+    st.floats(),
+    st.text(max_size=12),
+    st.sampled_from(["10.0.0.0/16", "10.0.0.1/16", "a", "web", "no"]),
+)
+_KEYS = st.one_of(
+    st.sampled_from(["vpc", "tiers", "cidr", "azs", "name", "prefix", "hosts"]),
+    st.text(max_size=5),
+    st.integers(),
+    st.booleans(),
+    st.none(),
+)
+_NESTED = st.recursive(
+    _LEAVES,
+    lambda children: st.one_of(
+        st.lists(children, max_size=4),
+        st.dictionaries(_KEYS, children, max_size=4),
+    ),
+    max_leaves=25,
+)
+
+
+@given(_NESTED)
+def test_prop_fuzz_validate(data):
+    try:
+        result = validate(data)
+    except ConfigError:
+        return
+    assert isinstance(result, Config)
