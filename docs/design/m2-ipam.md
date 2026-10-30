@@ -230,17 +230,27 @@ then `allocate`.
   network address and each one starts where the previous ended;
 - **placement order:** in address order, the keys are sorted by
   (prefix, tier's YAML position, AZ's YAML position);
-- every (tier, AZ) gets exactly one allocation;
+- every (tier, AZ) gets exactly one allocation, with that tier's prefix
+  length;
+- the dict's insertion order is address order;
 - `usable_hosts == size - 5`.
 
-**Capacity property** (overflow strategy): allocation fails with a
-`ConfigError` mentioning capacity **if and only if** the test's own sum
-exceeds the VPC size.
+**Capacity property** (overflow strategy): `validate` fails with a
+single `ConfigError` at `config` mentioning capacity **if and only if**
+the test's own sum exceeds the VPC size, and `allocate` on the same
+config built by hand as a `Config` fails the same way. (A dict never
+reaches `allocate`'s re-check: `validate` rejects it first.) Include an
+exactly-full example and an over-by-one-/28 example.
 
 **`hosts` resolution** (one tier, one AZ, a /16 VPC, hosts from 1 to
-65531): with `p` the resulting prefix, `usable(p) >= hosts`, and either
-`p == 28` or `usable(p + 1) < hosts`. This checks the definition, not
-the formula.
+65531): with `p` the resulting prefix, `16 <= p <= 28`,
+`usable(p) >= hosts`, and either `p == 28` or `usable(p + 1) < hosts`.
+This checks the definition, not the formula. The range check is needed:
+without the clamp, hosts 1-3 give /29, which passes the other two
+conditions. Mix boundary values into the draws (`2**k - 5` and its
+neighbours, k = 4..16) and add examples 1, 2, 3, 11 and 65531: an
+off-by-one in the formula changes the result only at the 13 values
+`2**k - 5`, which uniform draws almost never hit.
 
 **Fuzz:** arbitrary nested data (`st.recursive` over None, bools, ints,
 floats, strings, lists and dicts) passed to `validate` either returns a
