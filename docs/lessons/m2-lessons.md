@@ -268,3 +268,77 @@ went right and is worth repeating).
 - **Rule:** one constant per fact. Candidate cleanup:
   `32 - (hosts + AWS_RESERVED - 1).bit_length()`. Stage 1 mutation 1 and
   Stage 2 mutation E guard the two halves.
+
+## Oct 28–31, 2026 (Stage 3)
+
+### Standing rules split from the review doc (`process`)
+- **What:** the Stage 1 review doc held both a fix list (history) and
+  rules for new tests (standing). Moved the rules to
+  `docs/testing-guidelines.md`; left a pointer in the review doc.
+- **Rule:** review docs are one per review event and keep their stage
+  name; standing rules live in one place. Load the rules, not the
+  history, into aider.
+
+### Claude's prompt drifted from the spec (`agent`, `process`)
+- **Symptom:** the Stage 3 prompt Claude drafted summarized STATUS, which
+  summarized the spec. It dropped the capacity and fuzz properties and
+  changed the sizes.
+- **Rule:** point the agent at the spec section ("plan the Hypothesis
+  section of the spec"); add only what the spec lacks, and put that in
+  the spec first.
+
+### Plan review found a spec gap and a wrong claim (`worked`, `agent`)
+- **Spec gap:** the spec's hosts property (`usable(p) >= h`, and `p == 28`
+  or `usable(p + 1) < h`) passes a /29 for `h = 1..3`. The architect added
+  `16 <= p <= 28`; mutation S1-3 later failed only on that line.
+- **Wrong claim:** "the `+ 5` bug shows at h = 12… wait". Checked by brute
+  force: `+ 4` and `+ 5` differ at exactly 13 values, `h = 2**k - 5`. A
+  uniform draw of 100 hits one about 2% of the time.
+- **Rule:** brute-force an agent's "only at X" claims when the input
+  space is small. Fold plan changes into the spec, commit, then accept.
+
+### Editor departed from the plan, again (`agent`)
+- **Symptom:** `deadline=None` set for every test via
+  `settings.load_profile`; fuzz lost its realistic leaf values; no
+  departures listed, though asked for. Also a syntax-error line, fixed in
+  the same reply.
+- **Rule:** read the diff against the plan every time; the "list
+  departures" request doesn't make the editor list them.
+
+### Stage 3 mutations: all caught, goal met (`worked`)
+
+| Mutation | Before | After (own assertion) |
+| --- | --- | --- |
+| A: same-size tiers by name | 1 | 2 |
+| B: AZs by name | 1 | 2 |
+| C2: base hard-coded to 10.0.0.0 | 1 | 3 |
+| D: re-check `raise` removed | 2 | 3 (prefix half still 1) |
+| S1-1: `+ 4` → `+ 5` | 1 case | 3 (+7 by capacity side effect) |
+| S1-3: clamp 28 → 29 | 1 case | 3 |
+
+- **Prediction slips:** expected `aligned` to fail under C2. `10.0.0.0` is
+  10 × 2**24, a multiple of every block size, so packing from it stays
+  aligned. Alignment never looks at the VPC. Under S1-1, "possibly" some
+  fitting properties failed; all 8 did, because the generator often fills
+  the VPC exactly and a doubled block overflows it.
+- **Rule:** predict with reach → change → notice. Count only a test's own
+  assertion as a defense.
+- **Open:** the tier-prefix-vs-VPC half of `allocate`'s re-check has one
+  test (`test_allocate_rechecks_tier_prefix_vs_vpc`).
+
+### Shrinking: small, not minimal (`process`)
+- **Symptom:** mutation A's shrunk example kept AZs `[a, e, b, c]`, though
+  one AZ would still fail. B's shrank to the minimum (2 AZs, 1 tier).
+- **Cause:** the generator draws in dependent steps (VPC → AZs → room per
+  AZ → tier sizes); changing the AZs changes everything after, so the
+  shrinker's attempt no longer failed and was dropped.
+- **Rule:** for each part of a shrunk example, ask "would it still fail
+  without this?"
+
+### The device shell is Linux, not the Mac (`env`)
+- **Symptom:** `.venv/bin/python: No such file or directory` when Claude
+  ran it through the linked-computer shell.
+- **Cause:** that shell runs in a Linux VM with the folder mounted; the
+  venv's interpreter is a macOS binary.
+- **Rule:** run tests in my own terminal; Claude can read and edit files
+  there but not run the venv.

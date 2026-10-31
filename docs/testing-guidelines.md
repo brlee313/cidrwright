@@ -65,4 +65,57 @@ Run the suite with the venv's interpreter, so `PATH` order doesn't matter:
 
 ## Property tests (Hypothesis)
 
-To be written from M2 Stage 3.
+- **Build valid input by construction**, not by filtering random input.
+  A rare `assume()` or `.filter()` is fine; filtering out most draws
+  starves Hypothesis.
+- **The generator must produce the inputs that separate the rules.** The
+  example-test rule above applies here too: arbitrary name order, repeated
+  sizes, bases other than `10.0.0.0`. A property can only catch a bug the
+  generator gives it a chance to show.
+- **Compute expected values by definition, not by the formula.** E.g.
+  "smallest block with at least `h` usable hosts" by brute force over
+  prefixes, not by copying `bit_length()` from the code.
+- **Check the definition's edges too.** A definition can miss a rule it
+  takes for granted: "smallest block with enough hosts" passed a /29,
+  because nothing said /28 is the minimum. Assert the allowed range
+  explicitly.
+- **Random draws miss rare inputs. Mix them in.** If a bug changes the
+  result on only a few inputs (13 of 65,531 for an off-by-one in the
+  hosts formula), uniform draws almost never hit them. Add those values
+  with `st.one_of(..., st.sampled_from(BOUNDARY))` and pin the exact
+  cases with `@example`. Explicit examples run first.
+- **Reach code the dict path can't.** A check that `validate` always runs
+  first (e.g. `allocate`'s re-check) is only reachable through a
+  hand-built object. Test it that way.
+- **Use Hypothesis defaults.** Don't turn off the deadline or change
+  `max_examples` unless a test actually needs it, and say why in the
+  test. `settings.load_profile` in a test module changes settings for
+  the whole session.
+- **Count only a property's own assertion as a defense.** A property
+  that fails because the mutant made the input invalid (e.g. a capacity
+  error) is a side effect; it stops catching the bug if the generator
+  changes.
+
+### Reading a Hypothesis failure
+
+- The printed input is **shrunk**: Hypothesis removed what it could while
+  the test still failed. It is small, not always minimal. For each part,
+  ask "would it still fail without this?" Parts that can go are leftovers.
+- `Failing explicit example`: an `@example` failed; no random search or
+  shrinking happened.
+- `Hypothesis found N distinct failures`: separate failing assertions,
+  each with its own input. Each is a separate finding.
+- `Explanation: These lines were always and only run by failing test
+  cases`: points at the code involved, often the real cause.
+- A run with many failing properties is slow (minutes), because each one
+  is shrunk.
+
+### Predicting which tests a mutation fails
+
+Don't read every test. Narrow in three steps:
+
+1. **Reach:** which tests run the mutated line with input that gets
+   there? `grep` for callers, and remember hidden routes (shared helpers
+   such as `base()`, generators).
+2. **Change:** on that input, does the mutant give a different result?
+3. **Notice:** does an assertion look at what changed?
