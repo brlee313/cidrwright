@@ -157,8 +157,7 @@ def test_unknown_key_no_hint():
 
 
 def test_non_string_unknown_key():
-    data = base()
-    data[1] = "x"
+    data = {**base(), 1: "x"}   # non-str key on purpose (YAML allows '1: x')
     errs = errors_of(data)
     assert len(errs) == 1
     assert errs[0].startswith("config: ")
@@ -532,6 +531,7 @@ def test_spec_example_network(tmp_path):
         "client_pool": "10.99.0.0/24",
         "peers": ["bruce-laptop", "bruce-phone"],
     }
+    assert isinstance(net.policy_raw, list)
     assert len(net.policy_raw) == 9
     assert net.policy_raw[0] == {
         "action": "allow",
