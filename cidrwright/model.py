@@ -141,7 +141,7 @@ def _assemble(
             out += buckets.pop(("vpc", None), [])
         elif key == "tiers":
             out += buckets.pop(("tiers", None), [])
-            idxs = sorted({i for (h, i) in buckets if h == "tiers"} | set(tier_errors))
+            idxs = sorted({i for (h, i) in buckets if h == "tiers" and i is not None} | set(tier_errors))
             for i in idxs:
                 out += buckets.pop(("tiers", i), [])  # ipam first
                 out += tier_errors.get(i, [])  # then P-01, M-02
