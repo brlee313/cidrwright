@@ -15,7 +15,8 @@
 > example is now a complete working network (DNS over UDP and TCP via
 > the proxy) and says in comments what it leaves out and why (§3.1);
 > how DNS is governed (proxy resolver vs the cloud's built-in resolver)
-> is deferred to M4.
+> is deferred to M4. Clarified at Part A plan review (Nov 3): M-02
+> boolean check and the `model`/`ipam` error-merge order (§6).
 
 ## 1. Purpose and scope
 
@@ -329,7 +330,7 @@ messages. Messages start with a path (`policy[3].to[1]:`), like M2.
 | ID | Rule | Example message (sketch) |
 | --- | --- | --- |
 | M-01 | Config must be a mapping; unknown top-level key; missing `vpc`/`tiers` (same wording style as M2). | `config: unknown key 'polcy'` |
-| M-02 | Tier `public` must be `true` or `false` (with M2's YAML-boolean quoting hint where relevant). | `tiers[1] (app): public must be true or false, got 'yes'` |
+| M-02 | Tier `public` must be a boolean (`isinstance(v, bool)`, so `1` and `0` are rejected). No quoting hint: YAML 1.1 already reads unquoted `yes`/`no`/`on`/`off` as booleans, so only quoted strings or other types reach this error. | `tiers[1] (app): public must be true or false, got string 'yes'` (from `public: "yes"`) |
 | M-03 | `vpn` must be a mapping if present. | `vpn: must be a mapping, got a list` |
 
 **Phase 1, policy config-level:**
@@ -405,6 +406,14 @@ Follows M2's conventions, plus noise guards for policy:
   2. **Phases.** Policy checks run only if the tiers are valid (§4.3
      step 5); cross-entry checks run only if every entry is valid.
   3. **Deterministic.** Same input, same list, same order.
+- **Merging `model.py`'s and `ipam`'s errors (Part A):** `ipam` errors are
+  grouped by their leading path (`vpc`, `tiers[i]`, `config`; anything
+  unmatched goes to a trailing bucket, so nothing is lost), then
+  interleaved with `model.py`'s errors in file order. Within one tier:
+  `ipam`'s errors first, then reserved name (P-01), then `public`
+  (M-02). Missing top-level keys come first; the capacity error comes
+  last. Verified Nov 3: `ipam`'s capacity message starts with `config:`
+  and its vpc messages with `vpc` (`vpc.cidr`, `vpc.azs`, `vpc:`).
 - Messages use the user's words (tier names, YAML keys, entry index),
   never Python types or IR class names.
 
