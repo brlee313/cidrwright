@@ -787,6 +787,7 @@ def test_prop_fuzz_validate_network(data):
         return
     assert isinstance(result, Network)
 
+
 def test_missing_vpc_reported_before_tier_errors():
     data = base()
     del data["vpc"]
@@ -805,3 +806,4 @@ def test_missing_tiers_reported_before_vpc_errors():
     assert errs[0].startswith("config: ")
     assert "missing" in errs[0] and "tiers" in errs[0]
     assert errs[1].startswith("vpc")
+    
