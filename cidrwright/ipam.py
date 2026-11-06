@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 import yaml
 
+from cidrwright.yamlio import UniqueKeyLoader
+
 MIN_PREFIX = 16
 MAX_PREFIX = 28
 AWS_RESERVED = 5
@@ -418,31 +420,6 @@ def allocate(config: Config) -> dict[tuple[str, str], Allocation]:
     return result
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """SafeLoader that rejects duplicate mapping keys."""
-
-    def construct_mapping(self, node, deep=False):  # type: ignore[no-untyped-def]
-        if isinstance(node, yaml.MappingNode):
-            seen = set()
-            for key_node, _ in node.value:
-                if key_node.tag == "tag:yaml.org,2002:merge":
-                    continue
-                key = self.construct_object(key_node, deep=deep)
-                try:
-                    hash(key)
-                except TypeError:
-                    continue  # SafeLoader reports unhashable keys itself
-                if key in seen:
-                    raise yaml.constructor.ConstructorError(
-                        "while constructing a mapping",
-                        node.start_mark,
-                        f"duplicate key {key!r}",
-                        key_node.start_mark,
-                    )
-                seen.add(key)
-        return super().construct_mapping(node, deep=deep)
-
-
 def load_config(path) -> Config:  # type: ignore[no-untyped-def]
     """Read a YAML file and validate it. OSError propagates unchanged."""
     with open(path, "rb") as f:
@@ -454,7 +431,7 @@ def load_config(path) -> Config:  # type: ignore[no-untyped-def]
     loader = None
     try:
         # The constructor itself can raise (e.g. unprintable characters).
-        loader = _UniqueKeyLoader(text)
+        loader = UniqueKeyLoader(text)
         data = loader.get_single_data()
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
