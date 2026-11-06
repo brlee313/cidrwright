@@ -786,3 +786,22 @@ def test_prop_fuzz_validate_network(data):
     except ConfigError:
         return
     assert isinstance(result, Network)
+
+def test_missing_vpc_reported_before_tier_errors():
+    data = base()
+    del data["vpc"]
+    data["tiers"][1]["public"] = "x"
+    errs = errors_of(data)
+    assert errs[0].startswith("config: ")
+    assert "missing" in errs[0] and "vpc" in errs[0]
+    assert "public must be true or false" in errs[-1]
+
+
+def test_missing_tiers_reported_before_vpc_errors():
+    data = base()
+    del data["tiers"]
+    data["vpc"]["cidr"] = "10.0.0.0/33"
+    errs = errors_of(data)
+    assert errs[0].startswith("config: ")
+    assert "missing" in errs[0] and "tiers" in errs[0]
+    assert errs[1].startswith("vpc")
