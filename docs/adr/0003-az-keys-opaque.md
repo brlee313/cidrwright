@@ -38,6 +38,8 @@ job (M3), not IPAM's.
   only the mapping.
 - M3 must decide how keys map to zones: zone names, zone IDs, or a data
   source resolved at plan time. This is the first new ADR of M3 (0006).
+  *Update 2026-11-12: the mapping moved to M4 (decided Nov 2, M3 spec
+  §10 Q1); 0006 became [symbolic endpoints](0006-symbolic-endpoints.md).*
 - Key order matters: it is the AZ placement order ([0004](0004-placement-order.md)).
 
 ## Links
