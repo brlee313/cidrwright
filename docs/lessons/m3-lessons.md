@@ -12,10 +12,10 @@ checking M2's code.
 | Metric | Value |
 | --- | --- |
 | Started | Nov 2, 2026 (issue and branch `m3-network-model`) |
-| Finished | <merge date> (PR #<n> → `<merge hash>`) |
+| Finished | Nov 6, 2026 (PR #14 → `3c72a26`) |
 | Elapsed working time | ~7 hr |
 | Aider cost | $0.44 (architect plan $0.12, editor instructions $0.14, edits $0.18) |
-| OpenRouter usage | start of M3 $5.7958 → at merge $<x> |
+| OpenRouter usage | start of M3 $5.7958 → at merge $6.6558 (Δ $0.86; $0.42 not explained by aider's logged cost) |
 | Tests | 124 (M2) → 190 (66 new in `tests/test_model.py`) |
 | pyright (standard mode) | 6 errors found after the code was committed, all fixed; M2 code had 0 |
 | Mutations | 6 run; 4 caught at first, 1 gap (fixed), 1 equivalent |
@@ -95,4 +95,4 @@ bad tier `public`; missing `tiers` + bad `vpc.cidr`).
 - File loading duplicated between `model.load_network` and
   `ipam.load_config`; dedupe after M3 (move `ConfigError` to its own
   module to avoid a circular import).
-- pyright in the dev loop: issue #<n>, before Part B.
+- pyright in the dev loop: issue #13, done Nov 12 (PR #15 → `37ee4ca`): pinned, configured for `.venv`, required CI check "Tests and types".
