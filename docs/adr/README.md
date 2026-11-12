@@ -49,3 +49,4 @@ fixed by appending a dated, italic note under it ("*Update YYYY-MM-DD:
 | [0004](0004-placement-order.md) | Placement order: largest first, then YAML order | Accepted |
 | [0005](0005-tiers-are-data.md) | Tiers are data, not code | Accepted |
 | [0006](0006-symbolic-endpoints.md) | Policy rules name roles, not addresses or cloud objects | Accepted |
+| [0007](0007-least-privilege-egress.md) | No default egress; each rule is granted at both ends | Accepted |
