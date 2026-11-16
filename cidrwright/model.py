@@ -5,7 +5,9 @@ the tier attribute `public`. It strips `public` from the tiers, hands
 `vpc` and `tiers` to `ipam.validate`, and merges `ipam`'s errors with its
 own into one `ConfigError`, in document order.
 
-Part A: `policy` is kept raw and unchecked (`Network.policy_raw`).
+Part B: if the tiers are valid (spec §4.3 step 5), the `policy` section
+is compiled by `policy.compile_policy` into `Network.rules`; its errors
+are merged at the `policy` key's position in file order.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ class Network:
     config: ipam.Config
     public: frozenset[str]
     vpn: Mapping[str, object] | None
-    policy_raw: object  # None if absent; unchecked in Part A
+    rules: tuple[policy.Rule, ...]  # () if there is no policy key
 
 
 # ---------------------------------------------------------------- helpers
@@ -93,12 +95,29 @@ def _bucket(err: str) -> tuple[str, int | None]:
     return (m["head"], None)
 
 
+def _policy_allowed(
+    data: dict, ipam_errors: list[str], tier_errors: dict[int, list[str]]
+) -> bool:
+    """Spec §4.3 step 5: run policy checks only if the tiers are valid.
+
+    Blocked by: tiers absent or not a list, any ipam error in the `tiers`
+    or `tiers[i]` buckets, any P-01 or M-02 error. Not blocked by vpc
+    errors, the capacity error (`config:`) or unknown top-level keys.
+    """
+    if not isinstance(data.get("tiers"), list):
+        return False
+    if tier_errors:
+        return False
+    return not any(_bucket(e)[0] == "tiers" for e in ipam_errors)
+
+
 def _assemble(
     data: dict,
     unknown: list[str],
     ipam_errors: list[str],
     tier_errors: dict[int, list[str]],
     vpn_errors: list[str],
+    policy_errors: list[str],
 ) -> list[str]:
     """Merge model.py's and ipam's errors in document order.
 
@@ -111,7 +130,8 @@ def _assemble(
     path. The M2 tests pin that convention.
 
     Within one tier: ipam's errors first, then the reserved name (P-01),
-    then `public` (M-02).
+    then `public` (M-02). Policy errors go at the policy key's position in
+    file order.
     """
     buckets: dict[tuple[str, int | None], list[str]] = {}
     for e in ipam_errors:
@@ -132,6 +152,8 @@ def _assemble(
                 out += tier_errors.get(i, [])  # then P-01, M-02
         elif key == "vpn":
             out += vpn_errors
+        elif key == "policy":
+            out += policy_errors
     if not missing:
         out += config_errs
     for rest in buckets.values():  # safety net: never lose an error
@@ -170,7 +192,18 @@ def validate_network(data: object) -> Network:
         if "vpn" in data and not isinstance(data["vpn"], dict)
         else []
     )
-    errors = _assemble(data, unknown, ipam_errors, tier_errors, vpn_errors)
+    rules: tuple[policy.Rule, ...] = ()
+    policy_errors: list[str] = []
+    if "policy" in data and _policy_allowed(data, ipam_errors, tier_errors):
+        tiers_public: dict[str, bool] = {}
+        for t in data["tiers"]:  # YAML order; the gate guarantees valid tiers
+            assert isinstance(t, dict) and isinstance(t["name"], str)
+            tiers_public[t["name"]] = t.get("public") is True
+        try:
+            rules = policy.compile_policy(data["policy"], tiers_public, "vpn" in data)
+        except ConfigError as exc:
+            policy_errors = exc.errors
+    errors = _assemble(data, unknown, ipam_errors, tier_errors, vpn_errors, policy_errors)
     if errors:
         raise ConfigError(errors)
     assert config is not None
@@ -178,7 +211,7 @@ def validate_network(data: object) -> Network:
         config=config,
         public=frozenset(t["name"] for t in data["tiers"] if t.get("public") is True),
         vpn=data.get("vpn"),
-        policy_raw=data.get("policy"),
+        rules=rules,
     )
 
 
