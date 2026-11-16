@@ -7,7 +7,10 @@ import pytest
 
 from cidrwright import policy
 from cidrwright.policy import (
+    ICMP_MAX,
     MAX_PORT_SPAN,
+    PORT_MAX,
+    PORT_MIN,
     IcmpMatch,
     Internet,
     PortRange,
@@ -30,6 +33,14 @@ def entry(src: object = "app", dst: object = "db", **extra: object) -> dict[str,
 
 def without(e, *keys):
     return {k: v for k, v in e.items() if k not in keys}
+
+
+def icmp_entry(items: object, src: object = "vpn", dst: object = "app") -> dict[str, object]:
+    return without(entry(src, dst, proto="icmp", icmp=items), "ports")
+
+
+def rng(start: object, end: object) -> dict[str, object]:
+    return {"start": start, "end": end}
 
 
 def errs(pol, tiers=TIERS, has_vpn=True):
@@ -322,3 +333,161 @@ def test_input_not_mutated():
     before = copy.deepcopy((pol, tiers))
     errs(pol, tiers=tiers)
     assert (pol, tiers) == before
+
+
+# --------------------------------------------- proto, ports, icmp: valid
+
+
+def test_constants():
+    assert (PORT_MIN, PORT_MAX, ICMP_MAX) == (1, 65535, 255)
+
+
+VALID_MATCH = [
+    pytest.param(entry(ports=[1]), id="port-1"),
+    pytest.param(entry(ports=[65535]), id="port-65535"),
+    pytest.param(entry(proto="udp", ports=[53]), id="udp"),
+    pytest.param(entry(ports=[rng(1, 1024)]), id="span-1024-low"),
+    pytest.param(entry(ports=[rng(64512, 65535)]), id="span-1024-high"),
+    pytest.param(entry(ports=[rng(5, 5)]), id="range-one-port"),
+    pytest.param(entry(ports=[rng(8000, 8049), rng(8050, 8150)]), id="adjacent"),
+    pytest.param(entry(ports=[rng(8050, 8150), rng(8000, 8049)]), id="adjacent-reversed"),
+    pytest.param(entry(ports=[8080, 22, rng(9000, 9010), 443]), id="mixed-unsorted"),
+    pytest.param(icmp_entry([{"type": 0}]), id="icmp-type-0"),
+    pytest.param(icmp_entry([{"type": 255}]), id="icmp-type-255"),
+    pytest.param(icmp_entry([{"type": 0, "code": 0}]), id="icmp-code-0"),
+    pytest.param(icmp_entry([{"type": 255, "code": 255}]), id="icmp-code-255"),
+    pytest.param(icmp_entry([{"type": 8}, {"type": 3, "code": 4}]), id="icmp-spec"),
+    pytest.param(icmp_entry([{"type": 3, "code": 4}, {"type": 3, "code": 3}]), id="icmp-same-type-other-code"),
+    pytest.param(icmp_entry([{"type": 4}, {"type": 3}]), id="icmp-two-types"),
+]
+
+
+@pytest.mark.parametrize("good", VALID_MATCH)
+def test_match_valid(good):
+    assert errs([VALID[0], good]) == []
+
+
+MATCH_ERRORS = [
+    # P-30
+    pytest.param(entry(proto="tpc"), "policy[1].proto", ("'tpc' is not one of tcp, udp, icmp",), id="P30-typo"),
+    pytest.param(entry(proto="TCP"), "policy[1].proto", ("'TCP' is not one of",), id="P30-case"),
+    pytest.param(entry(proto=6), "policy[1].proto", ("must be one of tcp, udp, icmp", "number 6"), id="P30-num"),
+    pytest.param(entry(proto=True), "policy[1].proto", ("boolean True",), id="P30-bool"),
+    pytest.param(entry(proto=None), "policy[1].proto", ("nothing (null)",), id="P30-null"),
+    # P-31
+    pytest.param(without(entry(), "ports"), "policy[1]", ("missing 'ports'", "required for tcp"), id="P31-tcp"),
+    pytest.param(without(entry(proto="udp"), "ports"), "policy[1]", ("required for udp",), id="P31-udp"),
+    pytest.param(entry(ports=[]), "policy[1].ports", ("empty list",), id="P31-empty"),
+    pytest.param(entry(ports=443), "policy[1].ports", ("must be a list of ports", "number 443"), id="P31-num"),
+    pytest.param(entry(ports=None), "policy[1].ports", ("nothing (null)",), id="P31-null"),
+    # P-32
+    pytest.param(entry(icmp=[{"type": 8}]), "policy[1].icmp", ("only allowed with proto: icmp",), id="P32"),
+    pytest.param(without(entry(icmp=[{"type": 8}]), "ports"), "policy[1].icmp", ("only allowed with proto: icmp",), id="P32-before-P31"),    
+    # P-33
+    pytest.param(entry(proto="icmp", icmp=[{"type": 8}]), "policy[1].ports",
+                 ("not allowed with proto: icmp", "ICMP has no ports"), id="P33"),
+    pytest.param(entry(proto="icmp"), "policy[1].ports", ("not allowed with proto: icmp",), id="P33-before-P34"),
+    # P-34
+    pytest.param(without(entry(proto="icmp"), "ports"), "policy[1]", ("missing 'icmp'", "[{type: 8}]"), id="P34-missing"),
+    pytest.param(icmp_entry([]), "policy[1].icmp", ("empty list",), id="P34-empty"),
+    pytest.param(icmp_entry({"type": 8}), "policy[1].icmp", ("must be a list", "a mapping"), id="P34-map"),
+    # P-40
+    pytest.param(entry(ports=[0]), "policy[1].ports[0]", ("0 is outside 1-65535",), id="P40-0"),
+    pytest.param(entry(ports=[65536]), "policy[1].ports[0]", ("65536 is outside 1-65535",), id="P40-65536"),
+    pytest.param(entry(ports=[-1]), "policy[1].ports[0]", ("-1 is outside",), id="P40-neg"),
+    pytest.param(entry(ports=[22, 70000]), "policy[1].ports[1]", ("70000 is outside 1-65535",), id="P40-second"),
+    pytest.param(entry(ports=["443"]), "policy[1].ports[0]", ("must be a port number", "string '443'"), id="P40-str"),
+    pytest.param(entry(ports=[443.0]), "policy[1].ports[0]", ("number 443.0",), id="P40-float"),
+    pytest.param(entry(ports=[True]), "policy[1].ports[0]", ("boolean True",), id="P40-bool"),
+    pytest.param(entry(ports=[None]), "policy[1].ports[0]", ("nothing (null)",), id="P40-null"),
+    pytest.param(entry(ports=[rng(0, 10)]), "policy[1].ports[0].start", ("0 is outside 1-65535",), id="P40-start-0"),
+    pytest.param(entry(ports=[rng(65000, 65536)]), "policy[1].ports[0].end", ("65536 is outside",), id="P40-end-65536"),
+    pytest.param(entry(ports=[rng("1", 10)]), "policy[1].ports[0].start", ("string '1'",), id="P40-start-str"),
+    pytest.param(entry(ports=[rng(1, True)]), "policy[1].ports[0].end", ("boolean True",), id="P40-end-bool"),
+    # P-41
+    pytest.param(entry(ports=[rng(8099, 8000)]), "policy[1].ports[0]", ("start 8099 is greater than end 8000",), id="P41-reversed"),
+    pytest.param(entry(ports=[{"start": 8000}]), "policy[1].ports[0]", ("missing 'end'",), id="P41-no-end"),
+    pytest.param(entry(ports=[{"end": 8000}]), "policy[1].ports[0]", ("missing 'start'",), id="P41-no-start"),
+    pytest.param(entry(ports=[{}]), "policy[1].ports[0]", ("missing 'start'",), id="P41-empty"),
+    pytest.param(entry(ports=[{**rng(1, 2), "step": 1}]), "policy[1].ports[0]", ("unknown key 'step'",), id="P41-unknown"),
+    # P-42
+    pytest.param(entry(ports=[rng(1, 1025)]), "policy[1].ports[0]",
+                 ("range 1-1025 covers 1025 ports", "the limit is 1024"), id="P42-1025"),
+    pytest.param(entry(ports=[rng(1, 65535)]), "policy[1].ports[0]", ("covers 65535 ports",), id="P42-all"),
+    # P-43
+    pytest.param(entry(ports=[rng(8000, 8099), rng(8050, 8150)]), "policy[1].ports[1]",
+                 ("8050-8150 overlaps ports[0] (8000-8099) on 8050-8099",), id="P43-partial"),
+    pytest.param(entry(ports=[rng(8050, 8150), rng(8000, 8099)]), "policy[1].ports[1]",
+                 ("8000-8099 overlaps ports[0] (8050-8150) on 8050-8099",), id="P43-partial-reversed"),
+    pytest.param(entry(ports=[rng(8000, 8050), rng(8050, 8150)]), "policy[1].ports[1]", ("on 8050;",), id="P43-one-port"),
+    pytest.param(entry(ports=[rng(8000, 8099), 8080]), "policy[1].ports[1]",
+                 ("8080 overlaps ports[0] (8000-8099) on 8080",), id="P43-contained"),
+    pytest.param(entry(ports=[8080, rng(8000, 8099)]), "policy[1].ports[1]",
+                 ("8000-8099 overlaps ports[0] (8080) on 8080",), id="P43-contains"),
+    pytest.param(entry(ports=[22, 443, 22]), "policy[1].ports[2]", ("22 overlaps ports[0] (22)",), id="P43-dup"),
+    pytest.param(entry(ports=[rng(8000, 8009), rng(8020, 8029), rng(8005, 8025)]), "policy[1].ports[2]",
+                 ("overlaps ports[0] (8000-8009) on 8005-8009",), id="P43-earliest"),
+    pytest.param(entry(ports=[22, 22, 0]), "policy[1].ports[2]", ("0 is outside",), id="items-before-P43"),
+    # P-44
+    pytest.param(icmp_entry(["8"]), "policy[1].icmp[0]", ("must be a mapping like {type: 8}", "string '8'"), id="P44-str"),
+    pytest.param(icmp_entry([8]), "policy[1].icmp[0]", ("number 8",), id="P44-num"),
+    pytest.param(icmp_entry([{"code": 4}]), "policy[1].icmp[0]", ("missing 'type'",), id="P44-no-type"),
+    pytest.param(icmp_entry([{"type": 8, "kode": 0}]), "policy[1].icmp[0]", ("unknown key 'kode'",), id="P44-unknown"),
+    pytest.param(icmp_entry([{"type": 256}]), "policy[1].icmp[0].type", ("256 is outside 0-255",), id="P44-type-256"),
+    pytest.param(icmp_entry([{"type": -1}]), "policy[1].icmp[0].type", ("-1 is outside 0-255",), id="P44-type-neg"),
+    pytest.param(icmp_entry([{"type": 3, "code": 256}]), "policy[1].icmp[0].code", ("256 is outside 0-255",), id="P44-code-256"),
+    pytest.param(icmp_entry([{"type": 3, "code": -1}]), "policy[1].icmp[0].code", ("-1 is outside",), id="P44-code-neg"),
+    pytest.param(icmp_entry([{"type": True}]), "policy[1].icmp[0].type", ("boolean True",), id="P44-type-bool"),
+    pytest.param(icmp_entry([{"type": "8"}]), "policy[1].icmp[0].type", ("string '8'",), id="P44-type-str"),
+    pytest.param(icmp_entry([{"type": None}]), "policy[1].icmp[0].type", ("nothing (null)",), id="P44-type-null"),
+    pytest.param(icmp_entry([{"type": 3, "code": None}]), "policy[1].icmp[0].code",
+                 ("must be a number 0-255, got nothing (null)", "omit code to allow all codes"), id="P44-code-null"),
+    pytest.param(icmp_entry([{"type": 8}, {"type": 300}]), "policy[1].icmp[1].type", ("300 is outside",), id="P44-second"),
+    # P-45
+    pytest.param(icmp_entry([{"type": 8}, {"type": 8}]), "policy[1].icmp[1]",
+                 ("type 8, all codes is already covered by icmp[0] (type 8, all codes)",), id="P45-dup-type"),
+    pytest.param(icmp_entry([{"type": 3, "code": 4}, {"type": 3, "code": 4}]), "policy[1].icmp[1]",
+                 ("already covered by icmp[0] (type 3 code 4)",), id="P45-dup-code"),
+    pytest.param(icmp_entry([{"type": 3}, {"type": 3, "code": 4}]), "policy[1].icmp[1]",
+                 ("type 3 code 4 is already covered by icmp[0] (type 3, all codes)",), id="P45-covered"),
+    pytest.param(icmp_entry([{"type": 3, "code": 4}, {"type": 3}]), "policy[1].icmp[1]",
+                 ("type 3, all codes also covers icmp[0] (type 3 code 4)",), id="P45-covers"),
+    pytest.param(icmp_entry([{"type": 3, "code": 4}, {"type": 3, "code": 5}, {"type": 3}]), "policy[1].icmp[2]",
+                 ("icmp[0] (type 3 code 4)",), id="P45-earliest"),
+    pytest.param(icmp_entry([{"type": 8}, {"type": 8}, {"type": 256}]), "policy[1].icmp[2].type",
+                 ("256 is outside",), id="items-before-P45"),
+    # §5.1 order: pairs, then proto, then presence
+    pytest.param(entry("app", "app", proto="tpc"), "policy[1]", ("within a tier",), id="pairs-before-proto"),
+    pytest.param(entry(proto="tpc", ports=[0]), "policy[1].proto", ("'tpc'",), id="proto-before-ports"),
+    pytest.param(entry(proto="tpc", icmp=[{"type": 8}]), "policy[1].proto", ("'tpc'",), id="proto-before-presence"),
+]
+
+
+@pytest.mark.parametrize("bad, path, contents", MATCH_ERRORS)
+def test_match_error(bad, path, contents):
+    check(one([VALID[0], bad]), path, *contents)
+
+
+def test_spec_sketch_wording():
+    assert one([entry(ports=[22, rng(8000, 8099), rng(8050, 8150)])]) == (
+        "policy[0].ports[2]: 8050-8150 overlaps ports[1] (8000-8099) on 8050-8099; "
+        "split so each port appears once"
+    )
+    assert one([icmp_entry([{"type": 3}, {"type": 3, "code": 4}])]) == (
+        "policy[0].icmp[1]: type 3 code 4 is already covered by icmp[0] "
+        "(type 3, all codes); list each ICMP type and code once"
+    )
+
+
+def test_ports_without_proto_one_message():
+    bad = without(entry(ports=[0, rng(9, 1)]), "proto")
+    msg = one([bad])
+    check(msg, "policy[0]", "missing 'proto'")
+    assert "ports" not in msg
+
+
+def test_match_errors_in_entry_order():
+    e = errs([entry(ports=[0]), VALID[0], icmp_entry([{"type": 3, "code": None}])])
+    assert len(e) == 2
+    check(e[0], "policy[0].ports[0]", "0 is outside")
+    check(e[1], "policy[2].icmp[0].code", "omit code")

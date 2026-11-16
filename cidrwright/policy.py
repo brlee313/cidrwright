@@ -4,9 +4,9 @@
   `model.py` (P-01).
 - IR dataclasses (spec §4.1): `TierRef`, `Internet`, `Vpn`, `PortRange`,
   `IcmpMatch`, `Rule`.
-- `validate_policy`: checks the `policy:` section (P-02, P-10 and up),
+- `validate_policy`: checks the `policy:` section (P-02, P-10 to P-45),
   reporting at most one error per entry (spec §6 guard 1), in the check
-  order of spec §5.1.
+  order of spec §5.1. Cross-entry checks (P-50, P-51) come in Stage 3.
 
 This module does not import `ipam` (ADR 0006); it gets tier names and
 `public` flags as plain values.
@@ -34,6 +34,11 @@ _REQUIRED = (
     ("proto", " (one of tcp, udp, icmp)"),
 )
 _ENTRY_SHAPE = "{action: allow, from: web, to: app, proto: tcp, ports: [8080]}"
+_PROTOS = ("tcp", "udp", "icmp")
+PORT_MIN, PORT_MAX = 1, 65535
+ICMP_MAX = 255
+_RANGE_KEYS = ("start", "end")
+_ICMP_KEYS = ("type", "code")
 
 
 @dataclass(frozen=True)
@@ -106,8 +111,7 @@ def validate_policy(
         err = _check_entry(i, raw, tiers, has_vpn)
         if err is not None:
             errors.append(err)
-    # Stage 2 adds proto/ports/icmp checks to _check_entry. Stage 3 adds
-    # the cross-entry checks (P-50, P-51), run only if `errors` is empty.
+    # Stage 3 adds the cross-entry checks (P-50, P-51), run only if `errors` is empty.
     return errors
 
 
@@ -131,7 +135,7 @@ def _check_entry(
     dsts = _check_side(f"{where}.to", raw["to"], tiers, has_vpn)
     if isinstance(dsts, str):
         return dsts
-    return _check_pairs(where, srcs, dsts, tiers)
+    return _check_pairs(where, srcs, dsts, tiers) or _check_match(where, raw)
 
 
 def _check_keys(where: str, entry: dict) -> str | None:
@@ -254,3 +258,167 @@ def _check_pair(where: str, s: str, d: str, tiers: Mapping[str, bool]) -> str | 
             "goes through the WireGuard host, configured in vpn:)"
         )
     return None
+
+
+def _is_int(x: object) -> bool:
+    """Booleans are never integers here (M2's rule)."""
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _fmt_ports(start: int, end: int) -> str:
+    return str(start) if start == end else f"{start}-{end}"
+
+
+def _fmt_icmp(m: IcmpMatch) -> str:
+    return f"type {m.type}, all codes" if m.code is None else f"type {m.type} code {m.code}"
+
+
+def _check_match(where: str, entry: dict) -> str | None:
+    """§5.1 steps 4-5: proto (P-30), ports/icmp presence (P-31-P-34), items, overlaps."""
+    proto = entry["proto"]
+    if not isinstance(proto, str):
+        return f"{where}.proto: must be one of tcp, udp, icmp, got {describe(proto)}"
+    if proto not in _PROTOS:
+        return f"{where}.proto: {proto!r} is not one of tcp, udp, icmp"
+    if proto == "icmp":
+        if "ports" in entry:  # P-33
+            return f"{where}.ports: not allowed with proto: icmp (ICMP has no ports)"
+        if "icmp" not in entry:  # P-34
+            return f"{where}: missing 'icmp' (required for proto: icmp; e.g. [{{type: 8}}])"
+        return _check_icmp_list(where, entry["icmp"])
+    if "icmp" in entry:  # P-32 (forbidden key before missing one, §5.1)
+        return f"{where}.icmp: only allowed with proto: icmp"
+    if "ports" not in entry:  # P-31
+        return f"{where}: missing 'ports' (required for {proto})"
+    return _check_port_list(where, entry["ports"], proto)
+
+
+def _check_port_list(where: str, value: object, proto: str) -> str | None:
+    """P-31 (type/empty), items P-40-P-42 in order, then P-43."""
+    path = f"{where}.ports"
+    if not isinstance(value, list):
+        return f"{path}: must be a list of ports, got {describe(value)}"
+    if not value:
+        return f"{path}: empty list (required for {proto}; e.g. [443])"
+    ranges: list[PortRange] = []
+    for j, item in enumerate(value):
+        r = _check_port_item(f"{path}[{j}]", item)
+        if isinstance(r, str):
+            return r
+        ranges.append(r)
+    for j, r in enumerate(ranges):  # P-43, against the earliest item
+        for k in range(j):
+            o = ranges[k]
+            if r.start <= o.end and o.start <= r.end:  # §5 overlap formula
+                shared = _fmt_ports(max(r.start, o.start), min(r.end, o.end))
+                return (
+                    f"{path}[{j}]: {_fmt_ports(r.start, r.end)} overlaps ports[{k}] "
+                    f"({_fmt_ports(o.start, o.end)}) on {shared}; "
+                    "split so each port appears once"
+                )
+    return None
+
+
+def _check_port_number(loc: str, value: object, what: str) -> str | None:
+    """P-40 for one port number."""
+    if not _is_int(value):
+        return f"{loc}: must be {what}, got {describe(value)}"
+    assert isinstance(value, int)
+    if not PORT_MIN <= value <= PORT_MAX:
+        return f"{loc}: {value} is outside {PORT_MIN}-{PORT_MAX}"
+    return None
+
+
+def _check_port_item(loc: str, item: object) -> PortRange | str:
+    """One port item: an integer, or {start, end} (P-40, P-41, P-42)."""
+    if not isinstance(item, dict):
+        err = _check_port_number(
+            loc, item, f"a port number {PORT_MIN}-{PORT_MAX} or {{start, end}}"
+        )
+        if err:
+            return err
+        assert isinstance(item, int)
+        return PortRange(item, item)
+    for key in item:
+        if key not in _RANGE_KEYS:
+            return f"{loc}: unknown key {key!r} (allowed: start, end)"
+    for key in _RANGE_KEYS:
+        if key not in item:
+            return f"{loc}: missing {key!r} (a range is {{start: N, end: M}})"
+    for key in _RANGE_KEYS:
+        err = _check_port_number(f"{loc}.{key}", item[key], f"a port number {PORT_MIN}-{PORT_MAX}")
+        if err:
+            return err
+    start, end = item["start"], item["end"]
+    assert isinstance(start, int) and isinstance(end, int)
+    if start > end:
+        return f"{loc}: start {start} is greater than end {end}"
+    span = end - start + 1
+    if span > MAX_PORT_SPAN:
+        return f"{loc}: range {start}-{end} covers {span} ports; the limit is {MAX_PORT_SPAN}"
+    return PortRange(start, end)
+
+
+def _check_icmp_list(where: str, value: object) -> str | None:
+    """P-34 (type/empty), items P-44 in order, then P-45."""
+    path = f"{where}.icmp"
+    if not isinstance(value, list):
+        return f"{path}: must be a list like [{{type: 8}}], got {describe(value)}"
+    if not value:
+        return f"{path}: empty list (required for proto: icmp; e.g. [{{type: 8}}])"
+    matches: list[IcmpMatch] = []
+    for j, item in enumerate(value):
+        m = _check_icmp_item(f"{path}[{j}]", item)
+        if isinstance(m, str):
+            return m
+        matches.append(m)
+    for j, m in enumerate(matches):  # P-45, against the earliest item
+        for k in range(j):
+            o = matches[k]
+            if o.type != m.type:
+                continue
+            if o.code is None or o == m:
+                return (
+                    f"{path}[{j}]: {_fmt_icmp(m)} is already covered by icmp[{k}] "
+                    f"({_fmt_icmp(o)}); list each ICMP type and code once"
+                )
+            if m.code is None:
+                return (
+                    f"{path}[{j}]: {_fmt_icmp(m)} also covers icmp[{k}] "
+                    f"({_fmt_icmp(o)}); list each ICMP type and code once"
+                )
+    return None
+
+
+def _check_icmp_number(loc: str, value: object) -> str | None:
+    if not _is_int(value):
+        hint = "; omit code to allow all codes" if loc.endswith(".code") and value is None else ""
+        return f"{loc}: must be a number 0-{ICMP_MAX}, got {describe(value)}{hint}"
+    assert isinstance(value, int)
+    if not 0 <= value <= ICMP_MAX:
+        return f"{loc}: {value} is outside 0-{ICMP_MAX}"
+    return None
+
+
+def _check_icmp_item(loc: str, item: object) -> IcmpMatch | str:
+    """P-44 for one ICMP item. `code: null` is an error (it would widen the rule)."""
+    if not isinstance(item, dict):
+        return (
+            f"{loc}: must be a mapping like {{type: 8}} or {{type: 3, code: 4}}, "
+            f"got {describe(item)}"
+        )
+    for key in item:
+        if key not in _ICMP_KEYS:
+            return f"{loc}: unknown key {key!r} (allowed: type, code)"
+    if "type" not in item:
+        return f"{loc}: missing 'type'"
+    err = _check_icmp_number(f"{loc}.type", item["type"])
+    if err:
+        return err
+    if "code" in item:
+        err = _check_icmp_number(f"{loc}.code", item["code"])
+        if err:
+            return err
+    t, c = item["type"], item.get("code")
+    assert isinstance(t, int) and (c is None or isinstance(c, int))
+    return IcmpMatch(t, c)
