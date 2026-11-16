@@ -18,7 +18,8 @@ from dataclasses import dataclass
 import yaml
 
 from cidrwright import ipam, policy
-from cidrwright.ipam import ConfigError
+from cidrwright.errors import ConfigError
+from cidrwright.errors import describe as _describe
 from cidrwright.yamlio import UniqueKeyLoader
 
 _TOP_KEYS = ("vpc", "tiers", "vpn", "policy")
@@ -34,22 +35,6 @@ class Network:
 
 
 # ---------------------------------------------------------------- helpers
-
-
-def _describe(x: object) -> str:
-    if x is None:
-        return "nothing (null)"
-    if isinstance(x, bool):
-        return f"boolean {x}"
-    if isinstance(x, (int, float)):
-        return f"number {x!r}"
-    if isinstance(x, str):
-        return f"string {x!r}"
-    if isinstance(x, list):
-        return "a list"
-    if isinstance(x, dict):
-        return "a mapping"
-    return type(x).__name__
 
 
 def _unknown_key_errors(data: dict) -> list[str]:
