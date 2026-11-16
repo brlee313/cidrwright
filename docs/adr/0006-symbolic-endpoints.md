@@ -29,11 +29,11 @@ cause problems:
 
 ## Decision
 
-Policy rules name their endpoints by role: `Tier(name)`, `Internet()`
+Policy rules name their endpoints by role: `TierRef(name)`, `Internet()`
 or `Vpn()`. `policy.py` compiles them into a cloud-neutral IR
 (`Rule(src, dst, proto, match, entry)`, spec §4.1) that contains no
 addresses and no provider objects. Each emitter maps a role to its own
-cloud's construct, e.g. AWS: `Tier("app")` → a reference to the app
+cloud's construct, e.g. AWS: `TierRef("app")` → a reference to the app
 tier's security group. If an emitter can't express a rule exactly, it
 must refuse it (fail closed), never widen it.
 
