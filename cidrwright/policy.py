@@ -218,23 +218,35 @@ def _check_pairs(
     return None
 
 
+def _public_example(tiers: Mapping[str, bool]) -> str:
+    """First public tier in YAML order, for hints."""
+    for name, public in tiers.items():
+        if public:
+            return name
+    return "a public tier"
+
+
 def _check_pair(where: str, s: str, d: str, tiers: Mapping[str, bool]) -> str | None:
-    """P-20, then P-21, P-22, P-23 for one pair."""
+    """P-20, then P-21, P-22, P-23 for one pair. Hints name a real public tier."""
     pair = f"{where}: {s} -> {d}"
     if s == d:
-        return (
-            f"{pair}: traffic within a tier is not allowed; model the roles as "
-            "separate tiers (e.g. db-primary -> db-replica)"
-        )
+        if s in tiers:
+            return (
+                f"{pair}: traffic within a tier is not allowed; model the roles as "
+                "separate tiers (e.g. db-primary -> db-replica)"
+            )
+        return f"{pair}: an endpoint can't be paired with itself"
     if s == "internet" and d in tiers and not tiers[d]:
+        via = _public_example(tiers)
         return (
             f"{pair}: tier {d!r} is not public (add public: true to the tier, or "
-            f"route through a public tier, e.g. internet -> web, web -> {d})"
+            f"route through a public tier, e.g. internet -> {via}, {via} -> {d})"
         )
     if d == "internet" and s in tiers and not tiers[s]:
+        via = _public_example(tiers)
         return (
             f"{pair}: tier {s!r} is not public; route outbound traffic through a "
-            f"public tier, e.g. {s} -> proxy, proxy -> internet"
+            f"public tier, e.g. {s} -> {via}, {via} -> internet"
         )
     if {s, d} == {"internet", "vpn"}:
         return (

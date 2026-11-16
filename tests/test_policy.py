@@ -182,8 +182,10 @@ ENTRY_ERRORS = [
     # P-20
     pytest.param(entry("app", "app"), "policy[1]", ("app -> app", "traffic within a tier is not allowed"), id="P20"),
     pytest.param(entry(["db", "app"], "app"), "policy[1]", ("app -> app", "within a tier"), id="P20-list"),
-    pytest.param(entry("internet", "internet"), "policy[1]", ("internet -> internet", "within a tier"), id="P20-inet"),
-    pytest.param(entry("vpn", "vpn"), "policy[1]", ("vpn -> vpn", "within a tier"), id="P20-vpn"),
+    pytest.param(entry("internet", "internet"), "policy[1]",
+                 ("internet -> internet", "an endpoint can't be paired with itself"), id="P20-inet"),
+    pytest.param(entry("vpn", "vpn"), "policy[1]",
+                 ("vpn -> vpn", "an endpoint can't be paired with itself"), id="P20-vpn"),
     # P-21
     pytest.param(entry("internet", "app"), "policy[1]", ("internet -> app", "tier 'app' is not public"), id="P21"),
     pytest.param(entry("internet", ["proxy", "db"]), "policy[1]", ("internet -> db", "tier 'db' is not public"), id="P21-list"),
@@ -239,9 +241,55 @@ def test_star_lists_tiers_in_given_order():
 
 def test_public_flag_decides_not_name():
     tiers = {"web": False, "edge": True}
-    check(one([entry("internet", "web")], tiers=tiers), "policy[0]", "tier 'web' is not public")
-    check(one([entry("web", "internet")], tiers=tiers), "policy[0]", "tier 'web' is not public")
+    check(one([entry("internet", "web")], tiers=tiers), "policy[0]",
+          "tier 'web' is not public", "e.g. internet -> edge, edge -> web)")
+    check(one([entry("web", "internet")], tiers=tiers), "policy[0]",
+          "tier 'web' is not public", "e.g. web -> edge, edge -> internet")
     assert errs([entry("internet", "edge"), entry("edge", "internet")], tiers=tiers) == []
+
+
+@pytest.mark.parametrize(
+    "src, dst, own, other",
+    [
+        ("app", "app", "traffic within a tier is not allowed", "paired with itself"),
+        ("internet", "internet", "an endpoint can't be paired with itself", "within a tier"),
+        ("vpn", "vpn", "an endpoint can't be paired with itself", "within a tier"),
+    ],
+)
+def test_self_rule_wording(src, dst, own, other):
+    msg = one([entry(src, dst)])
+    check(msg, "policy[0]", f"{src} -> {dst}", own)
+    assert other not in msg
+
+
+# First tier private; first public is gate, not alphabetical-first edge; no web/proxy.
+HINT_TIERS = {"zeta": False, "gate": True, "edge": True}
+
+
+def test_hints_name_first_public_tier():
+    inbound = one([entry("internet", "zeta")], tiers=HINT_TIERS)
+    check(inbound, "policy[0]", "tier 'zeta' is not public",
+          "e.g. internet -> gate, gate -> zeta)")
+    outbound = one([entry("zeta", "internet")], tiers=HINT_TIERS)
+    check(outbound, "policy[0]", "tier 'zeta' is not public",
+          "e.g. zeta -> gate, gate -> internet")
+    for msg in (inbound, outbound):
+        assert "web" not in msg and "proxy" not in msg and "edge" not in msg
+
+
+def test_hints_default_tiers():
+    check(one([entry("internet", "app")]), "policy[0]", "e.g. internet -> web, web -> app)")
+    check(one([entry("db", "internet")]), "policy[0]", "e.g. db -> web, web -> internet")
+
+
+def test_hints_without_public_tier():
+    tiers = {"zeta": False, "alpha": False}
+    check(one([entry("internet", "zeta")], tiers=tiers), "policy[0]",
+          "tier 'zeta' is not public",
+          "e.g. internet -> a public tier, a public tier -> zeta)")
+    check(one([entry("zeta", "internet")], tiers=tiers), "policy[0]",
+          "tier 'zeta' is not public",
+          "e.g. zeta -> a public tier, a public tier -> internet")
 
 
 # ------------------------------------------------------------ noise guards
