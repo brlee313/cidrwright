@@ -410,8 +410,7 @@ not overlap and are allowed.
 2. the entry's own keys: unknown keys (P-11), then missing `action`,
    `from`, `to`, `proto` (P-12, P-13, P-30), in that order;
 3. values: `action` (P-12); sides (P-17, P-18); `from` items before `to`
-   items, each item in list order (P-14, P-15, P-16, P-19); pairs
-   (P-20, then P-21–P-23);
+   items, each item in list order (P-14, P-15, P-16, P-19); pairs (in list order; within each pair P-20, then P-21–P-23);
 4. `proto` value (P-30), then `ports`/`icmp` presence (P-31–P-34);
 5. `ports`/`icmp` items in list order (P-40–P-42, P-44), then overlaps
    within the entry (P-43, P-45).
