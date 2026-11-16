@@ -6,7 +6,10 @@
   `IcmpMatch`, `Rule`.
 - `validate_policy`: checks the `policy:` section (P-02, P-10 to P-45),
   reporting at most one error per entry (spec §6 guard 1), in the check
-  order of spec §5.1. Cross-entry checks (P-50, P-51) come in Stage 3.
+  order of spec §5.1; then, only if every entry is valid, the cross-entry
+  checks (P-50, P-51), at most one message per later entry.
+- `compile_policy`: validates, then expands the entries into `Rule`s
+  (spec §4.1 order); raises `ConfigError`.
 
 This module does not import `ipam` (ADR 0006); it gets tier names and
 `public` flags as plain values.
@@ -20,6 +23,7 @@ from dataclasses import dataclass
 from typing import Union
 
 from cidrwright.errors import describe
+from cidrwright.errors import ConfigError
 
 RESERVED_ENDPOINTS: tuple[str, ...] = ("internet", "vpn", "*")
 
@@ -111,8 +115,24 @@ def validate_policy(
         err = _check_entry(i, raw, tiers, has_vpn)
         if err is not None:
             errors.append(err)
-    # Stage 3 adds the cross-entry checks (P-50, P-51), run only if `errors` is empty.
+    if not errors:  # phase 3 (§6 guard 2): only if every entry passed
+        errors = _cross_entry_errors([_expand(i, e) for i, e in enumerate(raw_policy)])
     return errors
+
+
+def compile_policy(
+    raw_policy: object, tiers: Mapping[str, bool], has_vpn: bool
+) -> tuple[Rule, ...]:
+    """Validate, then expand into Rules; raise ConfigError on any error.
+
+    Order (§4.1): entry index, then the list side's order, then
+    ports/icmp item order.
+    """
+    errors = validate_policy(raw_policy, tiers, has_vpn)
+    if errors:
+        raise ConfigError(errors)
+    assert isinstance(raw_policy, list)
+    return tuple(r for i, e in enumerate(raw_policy) for r in _expand(i, e))
 
 
 def _check_entry(
@@ -422,3 +442,114 @@ def _check_icmp_item(loc: str, item: object) -> IcmpMatch | str:
     t, c = item["type"], item.get("code")
     assert isinstance(t, int) and (c is None or isinstance(c, int))
     return IcmpMatch(t, c)
+
+
+# ------------------------------------------------------- compile (§4.1)
+
+
+def _endpoint(name: str) -> Endpoint:
+    if name == "internet":
+        return Internet()
+    if name == "vpn":
+        return Vpn()
+    return TierRef(name)
+
+
+def _side_endpoints(value: object) -> list[Endpoint]:
+    items = value if isinstance(value, list) else [value]
+    out: list[Endpoint] = []
+    for item in items:
+        assert isinstance(item, str)
+        out.append(_endpoint(item))
+    return out
+
+
+def _to_match(proto: str, item: object) -> PortRange | IcmpMatch:
+    m = _check_icmp_item("", item) if proto == "icmp" else _check_port_item("", item)
+    if isinstance(m, str):
+        raise ValueError(f"entry not validated: {m}")
+    return m
+
+
+def _expand(i: int, entry: object) -> list[Rule]:
+    """Rules of one *valid* entry: list side outer, then items in YAML order."""
+    assert isinstance(entry, dict)
+    proto = entry["proto"]
+    assert isinstance(proto, str)
+    items = entry["icmp"] if proto == "icmp" else entry["ports"]
+    assert isinstance(items, list)
+    matches = [_to_match(proto, item) for item in items]
+    return [
+        Rule(s, d, proto, m, i)
+        for s in _side_endpoints(entry["from"])
+        for d in _side_endpoints(entry["to"])
+        for m in matches
+    ]
+
+
+# ------------------------------------------------- cross-entry (P-50, P-51)
+
+
+def _ep_name(e: Endpoint) -> str:
+    if isinstance(e, TierRef):
+        return e.name
+    return "internet" if isinstance(e, Internet) else "vpn"
+
+
+def _fmt_match(r: Rule) -> str:
+    m = r.match
+    if isinstance(m, PortRange):
+        return f"{r.proto} {_fmt_ports(m.start, m.end)}"
+    return f"icmp {_fmt_icmp(m)}"
+
+
+def _conflict(r: Rule, o: Rule) -> str | None:
+    """Tail of the message if later rule r conflicts with earlier rule o."""
+    if (r.src, r.dst, r.proto) != (o.src, o.dst, o.proto):
+        return None
+    if r.match == o.match:  # P-50
+        return f"duplicates policy[{o.entry}]"
+    a, b = r.match, o.match
+    if isinstance(a, PortRange) and isinstance(b, PortRange):  # P-51 ports
+        if a.start <= b.end and b.start <= a.end:
+            shared = _fmt_ports(max(a.start, b.start), min(a.end, b.end))
+            return (
+                f"overlaps policy[{o.entry}] ({_fmt_match(o)}) on {shared}; "
+                "split so each port is granted once"
+            )
+        return None
+    if isinstance(a, IcmpMatch) and isinstance(b, IcmpMatch) and a.type == b.type:  # P-51 ICMP
+        if b.code is None:
+            return (
+                f"is already covered by policy[{o.entry}] ({_fmt_match(o)}); "
+                "grant each ICMP type and code once"
+            )
+        if a.code is None:
+            return (
+                f"also covers policy[{o.entry}] ({_fmt_match(o)}); "
+                "grant each ICMP type and code once"
+            )
+    return None
+
+
+def _cross_entry_errors(by_entry: list[list[Rule]]) -> list[str]:
+    """One message per later entry, against the earliest conflicting entry (§5.1)."""
+    errors: list[str] = []
+    for j, rules in enumerate(by_entry):
+        msg = _first_conflict(by_entry[:j], rules)
+        if msg:
+            errors.append(msg)
+    return errors
+
+
+def _first_conflict(earlier: list[list[Rule]], rules: list[Rule]) -> str | None:
+    for prev in earlier:  # earliest entry first
+        for r in rules:  # then the later entry's rule order
+            for o in prev:
+                tail = _conflict(r, o)
+                if tail:
+                    return (
+                        f"policy[{r.entry}]: {_ep_name(r.src)} -> {_ep_name(r.dst)} "
+                        f"({_fmt_match(r)}) {tail}"
+                    )
+    return None

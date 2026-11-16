@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from cidrwright import policy
+from cidrwright.errors import ConfigError
 from cidrwright.policy import (
     ICMP_MAX,
     MAX_PORT_SPAN,
@@ -17,6 +18,7 @@ from cidrwright.policy import (
     Rule,
     TierRef,
     Vpn,
+    compile_policy,
     validate_policy,
 )
 
@@ -491,3 +493,172 @@ def test_match_errors_in_entry_order():
     assert len(e) == 2
     check(e[0], "policy[0].ports[0]", "0 is outside")
     check(e[1], "policy[2].icmp[0].code", "omit code")
+
+
+# ------------------------------------------------------------ compile
+
+
+def test_compile_empty():
+    assert compile_policy([], TIERS, True) == ()
+
+
+def test_compile_order_and_whole_rules():
+    # to-list with 2 items x 2 ports (list outer); from-list in another entry;
+    # proxy is public and not named web.
+    pol = [
+        entry("vpn", ["web", "db"], ports=[22, rng(8000, 8001)]),
+        entry(["app", "web"], "proxy", proto="udp", ports=[53, 3128]),
+        entry("proxy", "internet", ports=[443]),
+        icmp_entry([{"type": 8}, {"type": 3, "code": 4}]),
+    ]
+    assert compile_policy(pol, TIERS, True) == (
+        Rule(Vpn(), TierRef("web"), "tcp", PortRange(22, 22), 0),
+        Rule(Vpn(), TierRef("web"), "tcp", PortRange(8000, 8001), 0),
+        Rule(Vpn(), TierRef("db"), "tcp", PortRange(22, 22), 0),
+        Rule(Vpn(), TierRef("db"), "tcp", PortRange(8000, 8001), 0),
+        Rule(TierRef("app"), TierRef("proxy"), "udp", PortRange(53, 53), 1),
+        Rule(TierRef("app"), TierRef("proxy"), "udp", PortRange(3128, 3128), 1),
+        Rule(TierRef("web"), TierRef("proxy"), "udp", PortRange(53, 53), 1),
+        Rule(TierRef("web"), TierRef("proxy"), "udp", PortRange(3128, 3128), 1),
+        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(443, 443), 2),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(8, None), 3),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(3, 4), 3),
+    )
+
+
+SPEC_TIERS = {"web": True, "app": False, "db": False, "proxy": True}
+SPEC_POLICY = [
+    entry("internet", "web", ports=[443]),
+    entry("web", "app", ports=[8080]),
+    entry("app", "db", ports=[5432]),
+    entry("vpn", ["web", "app", "db"], ports=[22]),
+    entry("app", "proxy", ports=[53, 3128]),
+    entry("app", "proxy", proto="udp", ports=[53]),
+    entry("proxy", "internet", ports=[53, 443]),
+    entry("proxy", "internet", proto="udp", ports=[53]),
+    icmp_entry([{"type": 8}, {"type": 3, "code": 4}]),
+]
+
+
+def test_compile_spec_section_7():
+    assert compile_policy(SPEC_POLICY, SPEC_TIERS, True) == (
+        Rule(Internet(), TierRef("web"), "tcp", PortRange(443, 443), 0),
+        Rule(TierRef("web"), TierRef("app"), "tcp", PortRange(8080, 8080), 1),
+        Rule(TierRef("app"), TierRef("db"), "tcp", PortRange(5432, 5432), 2),
+        Rule(Vpn(), TierRef("web"), "tcp", PortRange(22, 22), 3),
+        Rule(Vpn(), TierRef("app"), "tcp", PortRange(22, 22), 3),
+        Rule(Vpn(), TierRef("db"), "tcp", PortRange(22, 22), 3),
+        Rule(TierRef("app"), TierRef("proxy"), "tcp", PortRange(53, 53), 4),
+        Rule(TierRef("app"), TierRef("proxy"), "tcp", PortRange(3128, 3128), 4),
+        Rule(TierRef("app"), TierRef("proxy"), "udp", PortRange(53, 53), 5),
+        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(53, 53), 6),
+        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(443, 443), 6),
+        Rule(TierRef("proxy"), Internet(), "udp", PortRange(53, 53), 7),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(8, None), 8),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(3, 4), 8),
+    )
+
+
+def test_compile_deterministic_and_not_mutating():
+    pol = copy.deepcopy(SPEC_POLICY)
+    first = compile_policy(pol, SPEC_TIERS, True)
+    assert pol == SPEC_POLICY
+    assert compile_policy(pol, SPEC_TIERS, True) == first
+
+
+@pytest.mark.parametrize(
+    "pol",
+    [
+        pytest.param(None, id="P02"),
+        pytest.param([entry(action="deny"), entry(dst="ap")], id="entry-errors"),
+        pytest.param([entry(ports=[22]), entry(ports=[22])], id="P50"),
+    ],
+)
+def test_compile_raises_with_validate_errors(pol):
+    expected = validate_policy(pol, TIERS, True)
+    assert expected
+    with pytest.raises(ConfigError) as info:
+        compile_policy(pol, TIERS, True)
+    assert info.value.errors == expected
+
+
+# ------------------------------------------------------- P-50 / P-51
+
+
+CROSS_VALID = [
+    pytest.param([entry("app", "db"), entry("db", "app")], id="reversed-pair"),
+    pytest.param([entry(ports=[53]), entry(proto="udp", ports=[53])], id="other-proto"),
+    pytest.param([entry(ports=[rng(8000, 8049)]), entry(ports=[rng(8050, 8150)])], id="adjacent"),
+    pytest.param([entry(ports=[rng(8050, 8150)]), entry(ports=[rng(8000, 8049)])], id="adjacent-reversed"),
+    pytest.param([entry("vpn", "web", ports=[22]), entry("vpn", "db", ports=[22])], id="other-dst"),
+    pytest.param([icmp_entry([{"type": 3, "code": 4}]), icmp_entry([{"type": 3, "code": 3}])], id="icmp-other-code"),
+    pytest.param([icmp_entry([{"type": 3}]), icmp_entry([{"type": 4, "code": 0}])], id="icmp-other-type"),
+]
+
+
+@pytest.mark.parametrize("pol", CROSS_VALID)
+def test_cross_entry_valid(pol):
+    assert errs(pol) == []
+    assert len(compile_policy(pol, TIERS, True)) == 2
+
+
+CROSS_ERRORS = [
+    pytest.param(
+        [entry("vpn", "web", ports=[22]), entry("app", "db"), entry("vpn", ["app", "web"], ports=[22])],
+        "policy[2]: vpn -> web (tcp 22) duplicates policy[0]", id="P50-via-list"),
+    pytest.param(
+        [icmp_entry([{"type": 8}]), icmp_entry([{"type": 8}])],
+        "policy[1]: vpn -> app (icmp type 8, all codes) duplicates policy[0]", id="P50-icmp"),
+    pytest.param(
+        [entry("vpn", "web", ports=[rng(8000, 8099)]), entry("app", "db"), entry("vpn", "web", ports=[rng(8050, 8150)])],
+        "policy[2]: vpn -> web (tcp 8050-8150) overlaps policy[0] (tcp 8000-8099) on 8050-8099; "
+        "split so each port is granted once", id="P51-partial"),
+    pytest.param(
+        [entry(ports=[rng(8050, 8150)]), entry(ports=[rng(8000, 8099)])],
+        "policy[1]: app -> db (tcp 8000-8099) overlaps policy[0] (tcp 8050-8150) on 8050-8099; "
+        "split so each port is granted once", id="P51-partial-reversed"),
+    pytest.param(
+        [entry(ports=[rng(8000, 8050)]), entry(ports=[rng(8050, 8150)])],
+        "policy[1]: app -> db (tcp 8050-8150) overlaps policy[0] (tcp 8000-8050) on 8050; "
+        "split so each port is granted once", id="P51-one-port"),
+    pytest.param(
+        [entry(ports=[8080]), entry(ports=[rng(8000, 8099)])],
+        "policy[1]: app -> db (tcp 8000-8099) overlaps policy[0] (tcp 8080) on 8080; "
+        "split so each port is granted once", id="P51-contains"),
+    pytest.param(
+        [icmp_entry([{"type": 3}]), icmp_entry([{"type": 3, "code": 4}])],
+        "policy[1]: vpn -> app (icmp type 3 code 4) is already covered by policy[0] "
+        "(icmp type 3, all codes); grant each ICMP type and code once", id="P51-icmp-covered"),
+    pytest.param(
+        [icmp_entry([{"type": 3, "code": 4}]), icmp_entry([{"type": 3}])],
+        "policy[1]: vpn -> app (icmp type 3, all codes) also covers policy[0] "
+        "(icmp type 3 code 4); grant each ICMP type and code once", id="P51-icmp-covers"),
+    # earliest *entry* wins over the later entry's first rule (443 clashes with policy[1])
+    pytest.param(
+        [entry(ports=[22]), entry(ports=[443]), entry(ports=[443, 22])],
+        "policy[2]: app -> db (tcp 22) duplicates policy[0]", id="earliest-entry"),
+]
+
+
+@pytest.mark.parametrize("pol, msg", CROSS_ERRORS)
+def test_cross_entry_error(pol, msg):
+    assert errs(pol) == [msg]
+
+
+def test_cross_entry_one_message_per_later_entry():
+    e = errs([entry(ports=[22]), entry(ports=[22]), VALID[0], entry(ports=[22])])
+    assert e == [
+        "policy[1]: app -> db (tcp 22) duplicates policy[0]",
+        "policy[3]: app -> db (tcp 22) duplicates policy[0]",
+    ]
+
+
+def test_malformed_entry_suppresses_cross_entry():
+    e = errs([entry(ports=[22]), entry(ports=[22]), entry(action="deny")])
+    assert len(e) == 1
+    check(e[0], "policy[2].action", "string 'deny'")
+    assert not any("duplicates" in m or "overlaps" in m for m in e)
+
+
+def test_valid_list_compiles():
+    assert len(compile_policy(VALID, TIERS, True)) == 11
