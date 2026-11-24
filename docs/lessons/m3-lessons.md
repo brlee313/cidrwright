@@ -106,7 +106,7 @@ bad tier `public`; missing `tiers` + bad `vpc.cidr`).
 | --- | --- |
 | Started | Nov 2, 2026 (issue); work began Nov 12, 14:21, after #13 merged |
 | Finished | Nov 24, 2026 (PR #17 → merge commit) |
-| Elapsed working time | | Elapsed working time | ~18.5 hr (Nov 12 14:21–17:30; Nov 16 10:28–16:06; Nov 21 10:20–14:06; Nov 22 12:21–16:24; Nov 24 11:23–13:16) |
+| Elapsed working time | ~18.5 hr (Nov 12 14:21–17:30; Nov 16 10:28–16:06; Nov 21 10:20–14:06; Nov 22 12:21–16:24; Nov 24 11:23–13:16) |
 | Cost (OpenRouter, source of truth) | at Part B start $6.6558 → $11.6280 before merge (Δ $4.97). Aider's own log shows about half of that: aider 0.86.2 undercounts the 5.5 models (~0.5×); confirmed against OpenRouter's `/activity` (Nov 21) |
 | Tests | 190 (end of Part A) → 409 (`test_policy.py`, `test_policy_props.py` with 7 properties, `test_model.py` updates) |
 | pyright (standard mode) | 0 errors at every stage commit; 32 errors in test helpers fixed by hand in Stage 1 (`entry()` typed `object`) |
