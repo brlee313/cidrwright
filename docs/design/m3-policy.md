@@ -41,8 +41,10 @@ Four modules (`errors.py` added in rev 5):
 Emitters (AWS in M4, Azure in M6) turn the IR into security groups or
 NSGs.
 
-Changes to `ipam.py`: **one pure move** (§8), its own commit, listed
-separately in the PR. No behavior change; M2's tests pass unchanged.
+Changes to `ipam.py`: **two pure moves** (§8), `UniqueKeyLoader` to
+`yamlio.py` (Part A) and `ConfigError` to `errors.py` (Part B), each its
+own commit, listed separately in its PR. No behavior change; M2's tests
+pass unchanged.
 
 ### 1.1 Two parts, one milestone
 
@@ -308,8 +310,7 @@ class Network:
     config: ipam.Config               # from ipam.validate, unchanged
     public: frozenset[str]            # names of public tiers
     vpn: Mapping[str, object] | None  # raw; validated in M4
-    policy_raw: object                # Part A only; Part B: rules
-    # Part B: rules: tuple[policy.Rule, ...]
+    rules: tuple[policy.Rule, ...]    # Part B; replaced Part A's policy_raw
 
 def validate_network(data: object) -> Network   # raises ConfigError
 def load_network(path) -> Network               # yamlio loader + validate_network
@@ -371,10 +372,10 @@ messages. Messages start with a path (`policy[3].to[1]:`), like M2.
 | P-17 | Both `from` and `to` are lists. | `policy[3]: from and to are both lists; split into separate entries` |
 | P-18 | Empty list in `from`/`to`. | `policy[3].to: empty list` |
 | P-19 | Same endpoint twice in one list. | `policy[3].to[2]: 'web' is listed twice` |
-| P-20 | Self-rule: same endpoint on both sides (includes `internet -> internet`). | `policy[3]: web -> web: traffic within a tier is not allowed; model the roles as separate tiers (e.g. db-primary -> db-replica)` |
+| P-20 | Self-rule: same endpoint on both sides (includes `internet -> internet`). | `policy[3]: web -> web: traffic within a tier is not allowed; model the roles as separate tiers (e.g. db-primary -> db-replica)`; for `internet`/`vpn`: `policy[3]: internet -> internet: an endpoint can't be paired with itself` |
 | P-21 | `internet` as source with a private tier as destination. | `policy[3]: internet -> app: tier 'app' is not public (add public: true to the tier, or route through a public tier, e.g. internet -> web, web -> app)` |
-| P-22 | A private tier as source with `internet` as destination. | `policy[3]: app -> internet: tier 'app' is not public; route outbound traffic through a public tier, e.g. app -> proxy, proxy -> internet` |
-| P-23 | `internet` paired with `internet` or `vpn` (either direction). | `policy[3]: internet -> vpn: internet can only be paired with a public tier (VPN access goes through the WireGuard host, configured in vpn:)` |
+| P-22 | A private tier as source with `internet` as destination. | `policy[3]: app -> internet: tier 'app' is not public; route outbound traffic through a public tier, e.g. app -> web, web -> internet` |
+| P-23 | `internet` paired with `vpn` (either direction). | `policy[3]: internet -> vpn: internet can only be paired with a public tier (VPN access goes through the WireGuard host, configured in vpn:)` |
 | P-30 | `proto` missing, or not tcp/udp/icmp. | `policy[3]: missing 'proto' (one of tcp, udp, icmp)` / `policy[3].proto: 'tpc' is not one of tcp, udp, icmp` |
 | P-31 | tcp/udp: `ports` missing or empty. | `policy[3]: missing 'ports' (required for tcp)` |
 | P-32 | tcp/udp: `icmp` present. | `policy[3].icmp: only allowed with proto: icmp` |
@@ -391,6 +392,9 @@ P-23 rationale: `vpn` reaches the network through the WireGuard host,
 not as a tier, so `internet <-> vpn` isn't a tier rule; a user writing
 it would think it does something it doesn't. WireGuard's own UDP port
 is M4's concern.
+
+P-21/P-22 hints name the first public tier in YAML order (`web` in the §3
+example), or "a public tier" if there is none.
 
 **Phase 3, cross-entry (Part B; runs only if every entry passed phase 2):**
 
