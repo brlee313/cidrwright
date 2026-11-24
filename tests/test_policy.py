@@ -610,6 +610,10 @@ CROSS_ERRORS = [
         [icmp_entry([{"type": 8}]), icmp_entry([{"type": 8}])],
         "policy[1]: vpn -> app (icmp type 8, all codes) duplicates policy[0]", id="P50-icmp"),
     pytest.param(
+        [icmp_entry([{"type": 3, "code": 4}], src="vpn", dst="app"),
+         icmp_entry([{"type": 3, "code": 4}], src="vpn", dst="app")],
+        "policy[1]: vpn -> app (icmp type 3 code 4) duplicates policy[0]", id="P50-icmp-code"),    
+    pytest.param(
         [entry("vpn", "web", ports=[rng(8000, 8099)]), entry("app", "db"), entry("vpn", "web", ports=[rng(8050, 8150)])],
         "policy[2]: vpn -> web (tcp 8050-8150) overlaps policy[0] (tcp 8000-8099) on 8050-8099; "
         "split so each port is granted once", id="P51-partial"),
@@ -622,6 +626,11 @@ CROSS_ERRORS = [
         "policy[1]: app -> db (tcp 8050-8150) overlaps policy[0] (tcp 8000-8050) on 8050; "
         "split so each port is granted once", id="P51-one-port"),
     pytest.param(
+        [entry(src="vpn", dst="web", ports=[rng(8000, 8050)]),
+         entry(src="vpn", dst=["app", "web"], ports=[rng(8050, 8150)])],
+        "policy[1]: vpn -> web (tcp 8050-8150) overlaps policy[0] (tcp 8000-8050) on 8050; "
+        "split so each port is granted once", id="P51-one-port-via-list"), 
+    pytest.param(
         [entry(ports=[8080]), entry(ports=[rng(8000, 8099)])],
         "policy[1]: app -> db (tcp 8000-8099) overlaps policy[0] (tcp 8080) on 8080; "
         "split so each port is granted once", id="P51-contains"),
@@ -629,6 +638,11 @@ CROSS_ERRORS = [
         [icmp_entry([{"type": 3}]), icmp_entry([{"type": 3, "code": 4}])],
         "policy[1]: vpn -> app (icmp type 3 code 4) is already covered by policy[0] "
         "(icmp type 3, all codes); grant each ICMP type and code once", id="P51-icmp-covered"),
+    pytest.param(
+        [icmp_entry([{"type": 3}], src="vpn", dst="app"),
+         icmp_entry([{"type": 3, "code": 4}], src="vpn", dst=["web", "app"])],
+        "policy[1]: vpn -> app (icmp type 3 code 4) is already covered by policy[0] "
+        "(icmp type 3, all codes); grant each ICMP type and code once", id="P51-icmp-covered-via-list"),
     pytest.param(
         [icmp_entry([{"type": 3, "code": 4}]), icmp_entry([{"type": 3}])],
         "policy[1]: vpn -> app (icmp type 3, all codes) also covers policy[0] "
