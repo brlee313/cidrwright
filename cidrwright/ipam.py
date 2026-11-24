@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 import yaml
 
+from cidrwright.errors import ConfigError as ConfigError  # re-export: ipam.ConfigError keeps working
+from cidrwright.errors import describe as _describe
 from cidrwright.yamlio import UniqueKeyLoader
 
 MIN_PREFIX = 16
@@ -45,17 +47,6 @@ _QUOTE_BOOL = (
     'booleans, so put it in quotes (e.g. "no")'
 )
 _QUOTE_NUM = "; YAML reads unquoted numbers as numbers, so put it in quotes"
-
-
-class ConfigError(ValueError):
-    """Every problem found in a config; str() gives one per line."""
-
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = list(errors)
-        super().__init__("\n".join(self.errors))
-
-    def __str__(self) -> str:
-        return "\n".join(self.errors)
 
 
 @dataclass(frozen=True)
@@ -86,22 +77,6 @@ class Allocation:
 
 def _is_int(x: object) -> bool:
     return isinstance(x, int) and not isinstance(x, bool)
-
-
-def _describe(x: object) -> str:
-    if x is None:
-        return "nothing (null)"
-    if isinstance(x, bool):
-        return f"boolean {x}"
-    if isinstance(x, (int, float)):
-        return f"number {x!r}"
-    if isinstance(x, str):
-        return f"string {x!r}"
-    if isinstance(x, list):
-        return "a list"
-    if isinstance(x, dict):
-        return "a mapping"
-    return type(x).__name__
 
 
 def _quote_hint(x: object) -> str:

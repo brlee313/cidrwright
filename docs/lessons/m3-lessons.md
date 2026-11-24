@@ -12,10 +12,10 @@ checking M2's code.
 | Metric | Value |
 | --- | --- |
 | Started | Nov 2, 2026 (issue and branch `m3-network-model`) |
-| Finished | <merge date> (PR #<n> → `<merge hash>`) |
+| Finished | Nov 6, 2026 (PR #14 → `3c72a26`) |
 | Elapsed working time | ~7 hr |
 | Aider cost | $0.44 (architect plan $0.12, editor instructions $0.14, edits $0.18) |
-| OpenRouter usage | start of M3 $5.7958 → at merge $<x> |
+| OpenRouter usage | start of M3 $5.7958 → at merge $6.6558 (Δ $0.86; $0.42 not explained by aider's logged cost) |
 | Tests | 124 (M2) → 190 (66 new in `tests/test_model.py`) |
 | pyright (standard mode) | 6 errors found after the code was committed, all fixed; M2 code had 0 |
 | Mutations | 6 run; 4 caught at first, 1 gap (fixed), 1 equivalent |
@@ -94,5 +94,97 @@ bad tier `public`; missing `tiers` + bad `vpc.cidr`).
 
 - File loading duplicated between `model.load_network` and
   `ipam.load_config`; dedupe after M3 (move `ConfigError` to its own
-  module to avoid a circular import).
-- pyright in the dev loop: issue #<n>, before Part B.
+  module to avoid a circular import). (ConfigError mod Nov 16, commit hash: 1825689)
+- pyright in the dev loop: issue #13, done Nov 12 (PR #15 → `37ee4ca`): pinned, configured for `.venv`, required CI check "Tests and types".
+
+
+## Part B: policy compiler (#11)
+
+### Metrics
+
+| Metric | Value |
+| --- | --- |
+| Started | Nov 2, 2026 (issue); work began Nov 12, 14:21, after #13 merged |
+| Finished | Nov 24, 2026 (PR #17 → merge commit) |
+| Elapsed working time | ~18.5 hr (Nov 12 14:21–17:30; Nov 16 10:28–16:06; Nov 21 10:20–14:06; Nov 22 12:21–16:24; Nov 24 11:23–13:16) |
+| Cost (OpenRouter, source of truth) | at Part B start $6.6558 → $11.6280 before merge (Δ $4.97). Aider's own log shows about half of that: aider 0.86.2 undercounts the 5.5 models (~0.5×); confirmed against OpenRouter's `/activity` (Nov 21) |
+| Tests | 190 (end of Part A) → 409 (`test_policy.py`, `test_policy_props.py` with 7 properties, `test_model.py` updates) |
+| pyright (standard mode) | 0 errors at every stage commit; 32 errors in test helpers fixed by hand in Stage 1 (`entry()` typed `object`) |
+| Mutations | 5 run on `policy.py` (B–F); all 5 caught; 3 were covered by one test or by message wording only → 3 tests added |
+| Review rework | aider plan raised 12 open points (A1–A12), settled in spec rev 5 before coding; hint/wording fixes after Stage 1; Stage 5 plan found 4 design gaps (all accepted); spec synced with the code at the end |
+
+### Commits
+
+| Commit | What |
+| --- | --- |
+| `2760079` | Lessons log: Part A merge metrics |
+| `8778268` | ADR 0006 symbolic endpoints; amend-note rule; ADR 0003 pointer |
+| `713bcc3` | ADR 0007 least-privilege egress |
+| `1825689` | `ConfigError`, `describe` moved to `errors.py` (pure move) |
+| `24d05f0` | Spec rev 5 (plan review A1–A12); `TierRef` in ADR 0006 |
+| `cb509c7` | Stage 1: IR dataclasses, structural validation (P-02, P-10–P-23) |
+| `9139e27` | Hints name a real public tier; self-pair wording for internet/vpn |
+| `f6dad4c` | Stage 2: proto, ports, ICMP validation (P-30–P-45) |
+| `f560157` | Stage 3: `compile_policy`, cross-entry checks (P-50, P-51) |
+| `45929a6` | Stage 4: `Network.rules`, policy gating, golden spec test |
+| `2006864` | Stage 5: Hypothesis properties P0–P6, valid by construction |
+| `bbef45c` | Stage 6: tests for mutants C, D, E |
+| `35e79c4` | Spec synced with Part B code |
+
+### Mutation check
+
+Each mutation was predicted first (reach → change → notice), then run
+on a clean tree and undone with `git restore`. Mutants are found by
+exact text, not line number.
+
+| # | Mutation in `policy.py` | Kind | First run | After fix |
+| --- | --- | --- | --- | --- |
+| B | span cap `span > MAX_PORT_SPAN` → `>=` | too strict | Caught: 2 example cases (1024-port ranges) + P0 | — |
+| C | overlap `a.start <= b.end` → `<` | too lax | Caught by **1** test (`P51-one-port`) | + `P51-one-port-via-list` |
+| D | duplicate check (`r.match == o.match`) deleted | too lax for ICMP type + code; otherwise message only | Caught by 4 tests, **all on message wording**; the accepted duplicate had no test | + `P50-icmp-code` |
+| E | all-codes cover check (`b.code is None`) deleted | too lax | Caught by **1** test (`P51-icmp-covered`) | + `P51-icmp-covered-via-list` |
+| F | `proto` dropped from the conflict key | too strict | Caught by 14 tests (example, golden spec, all 7 properties) | — |
+
+### Lessons
+
+1. **Too-strict and too-lax bugs are caught by different tests.**
+   Properties built from valid input catch a validator that rejects too
+   much (B, F: caught many times over). They can never catch one that
+   accepts too much, because valid input never contains the bad case.
+   Only example tests with invalid input can (C, D, E: 0–1 behavior
+   tests each before Stage 6).
+2. **A killed mutant isn't automatically covered.** D failed 4 tests,
+   but only because the error message changed. Its dangerous behavior
+   (accepting the same ICMP type and code twice) had no test. Trace
+   each behavior a mutant changes and check what catches each one.
+3. **Write the expected answer before running.** In a "second item in
+   the list" test, the first draft put the clash on the first item. The
+   expected message, written beforehand, disagreed with the output and
+   exposed it. An expected value copied from the output agrees by
+   construction and locks in bugs.
+4. **Property-test strategies must stay inside the property's domain.**
+   The Stage 5 generator builds valid input by construction (port
+   "decks", pinned boundaries such as `st.just(1024)`); out-of-domain
+   cases get their own example tests.
+5. **Plan review is cheap; rework is not.** Aider's architect plan
+   ($0.22) raised 12 open points, all settled in the spec before any
+   code; the Stage 5 plan found 4 real design gaps (ascending-only
+   input, the 64512–65535 tail, P0, P6).
+6. **Use the provider's numbers for cost.** Aider's log showed about
+   half the real spend; OpenRouter's `/activity` matched the usage delta
+   exactly. Log usage at the start and end of each part.
+7. **Readable tests name what the message names.** New tests pass
+   endpoints as `src=`/`dst=` keywords instead of relying on helper
+   defaults, so the input shows what the expected message mentions.
+8. **Triage findings; don't widen the PR.** The P-22 hint names the
+   first public tier, not the egress tier: a quality issue, not a
+   correctness one. Documented in the spec and filed as #16.
+
+### Carry-overs
+
+- #16: P-22 hint should name an egress tier.
+- Older tests rely on helper defaults for endpoints; convert to
+  keywords in their own PR.
+- File loading still duplicated between `model.load_network` and
+  `ipam.load_config`; with `ConfigError` in `errors.py`, a shared
+  helper in `yamlio` no longer has an import cycle.

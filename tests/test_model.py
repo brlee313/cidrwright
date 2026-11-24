@@ -1,5 +1,6 @@
 import copy
 import ipaddress
+from pathlib import Path
 
 import pytest
 from hypothesis import given
@@ -9,6 +10,7 @@ from cidrwright import ipam
 from cidrwright.ipam import Config, ConfigError, Tier, allocate
 from cidrwright.model import Network, load_network, validate_network
 from cidrwright.policy import RESERVED_ENDPOINTS, check_tier_names
+from cidrwright.policy import IcmpMatch, Internet, PortRange, Rule, TierRef, Vpn
 
 
 def base():
@@ -50,87 +52,13 @@ def placed(result):
     return [(a.tier, a.az, str(a.network)) for a in result.values()]
 
 
-SPEC_YAML = """\
-# A small three-tier web app: internet -> web -> app -> db, admin access
-# over WireGuard, and all outbound traffic from private tiers through a
-# public proxy that also resolves DNS.
-#
-# Not shown here, by design (each is someone else's job):
-# - Replies need no rules: AWS security groups are stateful.
-# - The WireGuard host's own port (UDP 51820) is set up from vpn:, not by
-#   a policy entry (M4).
-# - What makes a tier "public" on AWS (internet gateway route, public IPs)
-#   is M4's.
-# - DNS governance is NOT decided yet (M4 decides, before the AWS emitter
-#   design). Entries 4-7 show one option: the proxy is the resolver. The
-#   other: keep the cloud's built-in resolver and filter it by domain
-#   name (AWS: Route 53 Resolver DNS Firewall). Either way, every cloud's
-#   built-in resolver bypasses ordinary firewall rules by default
-#   (AWS VPC+2, Azure 168.63.129.16, GCP metadata server), so until M4
-#   decides, this example does not guarantee DNS goes through the proxy.
-# - Tiers with no outbound rule (web, db) can't start connections to
-#   anything not listed (e.g. no OS updates). Intended here; add entries
-#   (e.g. db -> proxy) if they need them. They can still look up names
-#   through the cloud's built-in resolver (see the DNS note).
-vpc:
-  cidr: 10.20.0.0/16
-  azs: [a, b]
-tiers:
-  - {name: web,   prefix: 24, public: true}   # load balancers / reverse proxies
-  - {name: app,   prefix: 23}
-  - {name: db,    prefix: 26}
-  - {name: proxy, prefix: 28, public: true}   # forward proxy + DNS resolver
-vpn:
-  type: wireguard              # contents validated in M4
-  client_pool: 10.99.0.0/24
-  peers: [bruce-laptop, bruce-phone]
-policy:
-  - action: allow              # 0: public HTTPS
-    from: internet
-    to: web
-    proto: tcp
-    ports: [443]
-  - action: allow              # 1: web forwards to the app
-    from: web
-    to: app
-    proto: tcp
-    ports: [8080]
-  - action: allow              # 2: app talks to the database
-    from: app
-    to: db
-    proto: tcp
-    ports: [5432]
-  - action: allow              # 3: admin SSH over the VPN
-    from: vpn
-    to: [web, app, db]
-    proto: tcp
-    ports: [22]
-  - action: allow              # 4: app -> proxy: DNS over TCP, HTTP(S) proxy
-    from: app
-    to: proxy
-    proto: tcp
-    ports: [53, 3128]
-  - action: allow              # 5: app -> proxy: DNS over UDP
-    from: app
-    to: proxy
-    proto: udp
-    ports: [53]
-  - action: allow              # 6: proxy -> internet: upstream DNS (TCP), HTTPS
-    from: proxy
-    to: internet
-    proto: tcp
-    ports: [53, 443]           # HTTPS only: plain-HTTP (80) sites are unreachable on purpose
-  - action: allow              # 7: proxy -> internet: upstream DNS (UDP)
-    from: proxy
-    to: internet
-    proto: udp
-    ports: [53]
-  - action: allow              # 8: ping and path-MTU discovery to the app, for troubleshooting
-    from: vpn
-    to: app
-    proto: icmp
-    icmp: [{type: 8}, {type: 3, code: 4}]
-"""
+SPEC_PATH = Path(__file__).parent / "data" / "spec-example.yaml"
+
+
+def rule_entry(src: object = "app", dst: object = "db", **extra: object) -> dict[str, object]:
+    e: dict[str, object] = {"action": "allow", "from": src, "to": dst, "proto": "tcp", "ports": [5432]}
+    e.update(extra)
+    return e
 
 
 # ------------------------------------------------------------------ M-01
@@ -167,7 +95,7 @@ def test_non_string_unknown_key():
 
 def test_vpn_and_policy_keys_accepted():
     assert validate_network(base()) == Network(
-        BASE_CONFIG, frozenset({"web", "proxy"}), {"type": "wireguard"}, []
+        BASE_CONFIG, frozenset({"web", "proxy"}), {"type": "wireguard"}, ()
     )
 
 
@@ -313,8 +241,8 @@ def test_input_not_mutated():
     assert ok == before_ok
 
 
-def test_public_does_not_change_allocation(tmp_path):
-    net = load_network(write(tmp_path, SPEC_YAML))
+def test_public_does_not_change_allocation():
+    net = load_network(SPEC_PATH)
     assert placed(allocate(net.config)) == [
         ("app", "a", "10.20.0.0/23"),
         ("app", "b", "10.20.2.0/23"),
@@ -518,8 +446,8 @@ def test_ipam_errors_surface_unchanged():
 # ------------------------------------------------------ valid files, loading
 
 
-def test_spec_example_network(tmp_path):
-    net = load_network(write(tmp_path, SPEC_YAML))
+def test_spec_example_network():
+    net = load_network(SPEC_PATH)
     assert net.config == Config(
         ipaddress.IPv4Network("10.20.0.0/16"),
         ("a", "b"),
@@ -531,30 +459,41 @@ def test_spec_example_network(tmp_path):
         "client_pool": "10.99.0.0/24",
         "peers": ["bruce-laptop", "bruce-phone"],
     }
-    assert isinstance(net.policy_raw, list)
-    assert len(net.policy_raw) == 9
-    assert net.policy_raw[0] == {
-        "action": "allow",
-        "from": "internet",
-        "to": "web",
-        "proto": "tcp",
-        "ports": [443],
-    }
-    assert net.policy_raw[3]["to"] == ["web", "app", "db"]
-    assert net.policy_raw[8]["icmp"] == [{"type": 8}, {"type": 3, "code": 4}]
+    assert len(net.rules) == 14
 
 
-def test_policy_absent_is_none():
+def test_golden_spec_rules():
+    assert load_network(SPEC_PATH).rules == (
+        Rule(Internet(), TierRef("web"), "tcp", PortRange(443, 443), 0),
+        Rule(TierRef("web"), TierRef("app"), "tcp", PortRange(8080, 8080), 1),
+        Rule(TierRef("app"), TierRef("db"), "tcp", PortRange(5432, 5432), 2),
+        Rule(Vpn(), TierRef("web"), "tcp", PortRange(22, 22), 3),
+        Rule(Vpn(), TierRef("app"), "tcp", PortRange(22, 22), 3),
+        Rule(Vpn(), TierRef("db"), "tcp", PortRange(22, 22), 3),
+        Rule(TierRef("app"), TierRef("proxy"), "tcp", PortRange(53, 53), 4),
+        Rule(TierRef("app"), TierRef("proxy"), "tcp", PortRange(3128, 3128), 4),
+        Rule(TierRef("app"), TierRef("proxy"), "udp", PortRange(53, 53), 5),
+        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(53, 53), 6),
+        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(443, 443), 6),
+        Rule(TierRef("proxy"), Internet(), "udp", PortRange(53, 53), 7),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(8, None), 8),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(3, 4), 8),
+    )
+
+
+def test_policy_absent_no_rules():
     data = base()
     del data["policy"]
-    assert validate_network(data).policy_raw is None
+    assert validate_network(data).rules == ()
 
 
-def test_policy_raw_not_validated_in_part_a():
-    # P-02 (policy must be a list) is Part B; Part A keeps the value as is.
+@pytest.mark.parametrize(
+    "value, got", [(5, "number 5"), (None, "nothing (null)"), ({}, "a mapping")]
+)
+def test_policy_not_a_list(value, got):
     data = base()
-    data["policy"] = 5
-    assert validate_network(data).policy_raw == 5
+    data["policy"] = value
+    assert errors_of(data) == [f"policy: must be a list of entries, got {got}"]
 
 
 @pytest.mark.parametrize(
@@ -651,13 +590,121 @@ def test_load_missing_file(tmp_path):
 
 
 def test_load_model_error_via_file(tmp_path):
-    path = write(tmp_path, SPEC_YAML + "polcy: []\n")
+    path = write(tmp_path, SPEC_PATH.read_text(encoding="utf-8") + "polcy: []\n")
     with pytest.raises(ConfigError) as info:
         load_network(path)
     errs = info.value.errors
     assert len(errs) == 1
     assert errs[0].startswith("config: ")
     assert "did you mean 'policy'?" in errs[0]
+
+
+# ---------------------------------------------------- policy (Part B)
+
+_POLICY_ORDER = {
+    "vpc": [("vpc.cidr", "use 10.20.0.0/16")],
+    "tiers": [],
+    "policy": [("policy[1].action", "string 'deny'")],
+    "vpn": [("vpn", "must be a mapping")],
+}
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        pytest.param(("vpc", "tiers", "vpn", "policy"), id="policy-last"),
+        pytest.param(("policy", "vpn", "tiers", "vpc"), id="policy-first"),
+    ],
+)
+def test_policy_errors_in_document_order(order):
+    full = base()
+    full["vpc"]["cidr"] = "10.20.0.1/16"
+    full["vpn"] = []
+    full["policy"] = [rule_entry(), rule_entry("web", "app", action="deny")]
+    data = {k: full[k] for k in order}
+    expected = [item for key in order for item in _POLICY_ORDER[key]]
+    errs = errors_of(data)
+    assert len(errs) == 3
+    for err, (location, content) in zip(errs, expected):
+        assert err.startswith(location + ": ")
+        assert content in err
+
+
+@pytest.mark.parametrize(
+    "i, key, value, location",
+    [
+        pytest.param(0, "prefix", 15, "tiers[0] (db)", id="ipam-tier-error"),
+        pytest.param(1, "name", "internet", "tiers[1] (internet)", id="P01"),
+        pytest.param(2, "public", "x", "tiers[2] (web)", id="M02"),
+        pytest.param(3, "name", "app", "tiers[3]", id="duplicate-name"),
+    ],
+)
+def test_broken_tier_no_policy_messages(i, key, value, location):
+    data = base()
+    data["tiers"][i][key] = value
+    data["policy"] = [rule_entry("internet", "app"), rule_entry(action="deny")]
+    errs = errors_of(data)
+    assert len(errs) == 1
+    assert errs[0].startswith(location)
+    assert not any(e.startswith("policy") for e in errs)
+
+
+def test_tiers_not_a_list_no_policy_messages():
+    data = base()
+    data["tiers"] = "web"
+    data["policy"] = [rule_entry(action="deny")]
+    errs = errors_of(data)
+    assert len(errs) == 1
+    assert errs[0].startswith("tiers: ")
+    assert not any(e.startswith("policy") for e in errs)
+
+
+def test_invalid_vpn_gives_m03_not_p16():
+    data = base()
+    data["vpn"] = []
+    data["policy"] = [rule_entry("vpn", "app", ports=[22])]
+    errs = errors_of(data)
+    assert len(errs) == 1
+    assert errs[0].startswith("vpn: ")
+    assert "must be a mapping" in errs[0]
+    del data["vpn"]  # other direction: no vpn key at all -> P-16
+    errs = errors_of(data)
+    assert len(errs) == 1
+    assert errs[0].startswith("policy[0].from: ")
+    assert "no vpn: section is defined" in errs[0]
+
+
+@pytest.mark.parametrize(
+    "change, first",
+    [
+        pytest.param(lambda d: d["vpc"].update(cidr="10.20.0.1/16"), "vpc.cidr: ", id="bad-cidr"),
+        pytest.param(lambda d: d["vpc"].update(cidr="10.20.0.0/22"), "config: ", id="capacity"),
+        pytest.param(lambda d: d.update(extra=1), "config: ", id="unknown-key"),
+        pytest.param(lambda d: d.pop("vpc"), "config: ", id="missing-vpc"),
+    ],
+)
+def test_non_tier_errors_do_not_block_policy(change, first):
+    data = base()
+    change(data)
+    data["policy"] = [rule_entry(dst="ap")]
+    errs = errors_of(data)
+    assert len(errs) == 2
+    assert any(e.startswith(first) for e in errs)
+    policy_errs = [e for e in errs if e.startswith("policy")]
+    assert len(policy_errs) == 1
+    assert policy_errs[0].startswith("policy[0].to: ")
+    assert "unknown endpoint 'ap'" in policy_errs[0]
+
+
+def test_valid_policy_compiles_in_model():
+    data = base()
+    data["policy"] = [rule_entry(["web", "app"], "db", ports=[5432, 22])]
+    assert validate_network(data).rules == (
+        Rule(TierRef("web"), TierRef("db"), "tcp", PortRange(5432, 5432), 0),
+        Rule(TierRef("web"), TierRef("db"), "tcp", PortRange(22, 22), 0),
+        Rule(TierRef("app"), TierRef("db"), "tcp", PortRange(5432, 5432), 0),
+        Rule(TierRef("app"), TierRef("db"), "tcp", PortRange(22, 22), 0),
+    )
 
 
 # ------------------------------------------------------------ properties

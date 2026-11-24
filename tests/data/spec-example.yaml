@@ -1,0 +1,79 @@
+# A small three-tier web app: internet -> web -> app -> db, admin access
+# over WireGuard, and all outbound traffic from private tiers through a
+# public proxy that also resolves DNS.
+#
+# Not shown here, by design (each is someone else's job):
+# - Replies need no rules: AWS security groups are stateful.
+# - The WireGuard host's own port (UDP 51820) is set up from vpn:, not by
+#   a policy entry (M4).
+# - What makes a tier "public" on AWS (internet gateway route, public IPs)
+#   is M4's.
+# - DNS governance is NOT decided yet (M4 decides, before the AWS emitter
+#   design). Entries 4-7 show one option: the proxy is the resolver. The
+#   other: keep the cloud's built-in resolver and filter it by domain
+#   name (AWS: Route 53 Resolver DNS Firewall). Either way, every cloud's
+#   built-in resolver bypasses ordinary firewall rules by default
+#   (AWS VPC+2, Azure 168.63.129.16, GCP metadata server), so until M4
+#   decides, this example does not guarantee DNS goes through the proxy.
+# - Tiers with no outbound rule (web, db) can't start connections to
+#   anything not listed (e.g. no OS updates). Intended here; add entries
+#   (e.g. db -> proxy) if they need them. They can still look up names
+#   through the cloud's built-in resolver (see the DNS note).
+vpc:
+  cidr: 10.20.0.0/16
+  azs: [a, b]
+tiers:
+  - {name: web,   prefix: 24, public: true}   # load balancers / reverse proxies
+  - {name: app,   prefix: 23}
+  - {name: db,    prefix: 26}
+  - {name: proxy, prefix: 28, public: true}   # forward proxy + DNS resolver
+vpn:
+  type: wireguard              # contents validated in M4
+  client_pool: 10.99.0.0/24
+  peers: [bruce-laptop, bruce-phone]
+policy:
+  - action: allow              # 0: public HTTPS
+    from: internet
+    to: web
+    proto: tcp
+    ports: [443]
+  - action: allow              # 1: web forwards to the app
+    from: web
+    to: app
+    proto: tcp
+    ports: [8080]
+  - action: allow              # 2: app talks to the database
+    from: app
+    to: db
+    proto: tcp
+    ports: [5432]
+  - action: allow              # 3: admin SSH over the VPN
+    from: vpn
+    to: [web, app, db]
+    proto: tcp
+    ports: [22]
+  - action: allow              # 4: app -> proxy: DNS over TCP, HTTP(S) proxy
+    from: app
+    to: proxy
+    proto: tcp
+    ports: [53, 3128]
+  - action: allow              # 5: app -> proxy: DNS over UDP
+    from: app
+    to: proxy
+    proto: udp
+    ports: [53]
+  - action: allow              # 6: proxy -> internet: upstream DNS (TCP), HTTPS
+    from: proxy
+    to: internet
+    proto: tcp
+    ports: [53, 443]           # HTTPS only: plain-HTTP (80) sites are unreachable on purpose
+  - action: allow              # 7: proxy -> internet: upstream DNS (UDP)
+    from: proxy
+    to: internet
+    proto: udp
+    ports: [53]
+  - action: allow              # 8: ping and path-MTU discovery to the app, for troubleshooting
+    from: vpn
+    to: app
+    proto: icmp
+    icmp: [{type: 8}, {type: 3, code: 4}]
