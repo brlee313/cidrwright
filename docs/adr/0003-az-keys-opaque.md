@@ -40,6 +40,8 @@ job (M3), not IPAM's.
   source resolved at plan time. This is the first new ADR of M3 (0006).
   *Update 2026-11-12: the mapping moved to M4 (decided Nov 2, M3 spec
   §10 Q1); 0006 became [symbolic endpoints](0006-symbolic-endpoints.md).*
+  *Update 2026-11-25: decided in [0008](0008-az-zone-ids-target-file.md):
+  keys map to zone IDs in a committed target file.*
 - Key order matters: it is the AZ placement order ([0004](0004-placement-order.md)).
 
 ## Links
