@@ -20,6 +20,10 @@
 > Rev 5 (Nov 16, Part B plan review): IR endpoint `Tier` renamed
 > `TierRef`; `ConfigError` and `describe` move to `errors.py`; open
 > points A1–A12 from the architect plan settled in §4.3, §5.1 and §10.
+> Rev 6 (Nov 25, M4 design day, ADR 0009): the §3 example drops the
+> proxy-as-DNS-resolver rules (old entries 5 and 7; port 53 removed from
+> entries 4 and 6); DNS uses the cloud's built-in resolver. 7 entries,
+> 10 IR rules (§7). No grammar, rule or behavior change.
 
 ## 1. Purpose and scope
 
@@ -108,8 +112,8 @@ IPv4 only: `internet` means `0.0.0.0/0`; no emitter may emit `::/0`.
 
 ```yaml
 # A small three-tier web app: internet -> web -> app -> db, admin access
-# over WireGuard, and all outbound traffic from private tiers through a
-# public proxy that also resolves DNS.
+# over WireGuard, and all outbound web traffic from private tiers through
+# a public HTTP(S) forward proxy.
 #
 # Not shown here, by design (each is someone else's job):
 # - Replies need no rules: AWS security groups are stateful.
@@ -117,17 +121,14 @@ IPv4 only: `internet` means `0.0.0.0/0`; no emitter may emit `::/0`.
 #   a policy entry (M4).
 # - What makes a tier "public" on AWS (internet gateway route, public IPs)
 #   is M4's.
-# - DNS governance is NOT decided yet (M4 decides, before the AWS emitter
-#   design). Entries 4-7 show one option: the proxy is the resolver. The
-#   other: keep the cloud's built-in resolver and filter it by domain
-#   name (AWS: Route 53 Resolver DNS Firewall). Either way, every cloud's
-#   built-in resolver bypasses ordinary firewall rules by default
-#   (AWS VPC+2, Azure 168.63.129.16, GCP metadata server), so until M4
-#   decides, this example does not guarantee DNS goes through the proxy.
+# - DNS needs no policy entries: every tier resolves names through the
+#   cloud's built-in resolver (AWS: VPC base + 2), which security groups
+#   don't filter. The emitter keeps VPC DNS on (ADR 0009). Filtering
+#   names by domain is decided before M5's first apply (ADR 0009); until
+#   then lookups are unfiltered.
 # - Tiers with no outbound rule (web, db) can't start connections to
 #   anything not listed (e.g. no OS updates). Intended here; add entries
-#   (e.g. db -> proxy) if they need them. They can still look up names
-#   through the cloud's built-in resolver (see the DNS note).
+#   (e.g. db -> proxy) if they need them.
 vpc:
   cidr: 10.20.0.0/16
   azs: [a, b]
@@ -135,7 +136,7 @@ tiers:
   - {name: web,   prefix: 24, public: true}   # load balancers / reverse proxies
   - {name: app,   prefix: 23}
   - {name: db,    prefix: 26}
-  - {name: proxy, prefix: 28, public: true}   # forward proxy + DNS resolver
+  - {name: proxy, prefix: 28, public: true}   # HTTP(S) forward proxy
 vpn:
   type: wireguard              # contents validated in M4
   client_pool: 10.99.0.0/24
@@ -161,27 +162,17 @@ policy:
     to: [web, app, db]
     proto: tcp
     ports: [22]
-  - action: allow              # 4: app -> proxy: DNS over TCP, HTTP(S) proxy
+  - action: allow              # 4: app -> proxy: HTTP(S) proxy
     from: app
     to: proxy
     proto: tcp
-    ports: [53, 3128]
-  - action: allow              # 5: app -> proxy: DNS over UDP
-    from: app
-    to: proxy
-    proto: udp
-    ports: [53]
-  - action: allow              # 6: proxy -> internet: upstream DNS (TCP), HTTPS
+    ports: [3128]
+  - action: allow              # 5: proxy -> internet: HTTPS
     from: proxy
     to: internet
     proto: tcp
-    ports: [53, 443]           # HTTPS only: plain-HTTP (80) sites are unreachable on purpose
-  - action: allow              # 7: proxy -> internet: upstream DNS (UDP)
-    from: proxy
-    to: internet
-    proto: udp
-    ports: [53]
-  - action: allow              # 8: ping and path-MTU discovery to the app, for troubleshooting
+    ports: [443]               # HTTPS only: plain-HTTP (80) sites are unreachable on purpose
+  - action: allow              # 6: ping and path-MTU discovery to the app, for troubleshooting
     from: vpn
     to: app
     proto: icmp
@@ -483,17 +474,13 @@ Rule(TierRef("app"),    TierRef("db"),     "tcp",  PortRange(5432, 5432), entry=
 Rule(Vpn(),             TierRef("web"),    "tcp",  PortRange(22, 22),     entry=3)
 Rule(Vpn(),             TierRef("app"),    "tcp",  PortRange(22, 22),     entry=3)
 Rule(Vpn(),             TierRef("db"),     "tcp",  PortRange(22, 22),     entry=3)
-Rule(TierRef("app"),    TierRef("proxy"),  "tcp",  PortRange(53, 53),     entry=4)
 Rule(TierRef("app"),    TierRef("proxy"),  "tcp",  PortRange(3128, 3128), entry=4)
-Rule(TierRef("app"),    TierRef("proxy"),  "udp",  PortRange(53, 53),     entry=5)
-Rule(TierRef("proxy"),  Internet(),        "tcp",  PortRange(53, 53),     entry=6)
-Rule(TierRef("proxy"),  Internet(),        "tcp",  PortRange(443, 443),   entry=6)
-Rule(TierRef("proxy"),  Internet(),        "udp",  PortRange(53, 53),     entry=7)
-Rule(Vpn(),             TierRef("app"),    "icmp", IcmpMatch(8, None),    entry=8)
-Rule(Vpn(),             TierRef("app"),    "icmp", IcmpMatch(3, 4),       entry=8)
+Rule(TierRef("proxy"),  Internet(),        "tcp",  PortRange(443, 443),   entry=5)
+Rule(Vpn(),             TierRef("app"),    "icmp", IcmpMatch(8, None),    entry=6)
+Rule(Vpn(),             TierRef("app"),    "icmp", IcmpMatch(3, 4),       entry=6)
 ```
 
-14 rules: 1 + 1 + 1 + 3 + 2 + 1 + 2 + 1 + 2.
+10 rules: 1 + 1 + 1 + 3 + 1 + 1 + 2.
 
 ## 8. The `ipam.py` change (Part A; separate, reviewable on its own)
 

@@ -83,9 +83,9 @@ AWS offers two ways to govern Resolver traffic by name:
 - Golden files show the DNS attributes and the DHCP options set; an
   invariant test checks them on every VPC. A manual change to either
   shows up as drift in `plan`.
-- The M3 spec §3 example (entries 4–7: app → proxy DNS, proxy → internet
-  DNS) no longer shows the chosen design. Revise it in the spec, on this
-  branch.
+- The M3 spec §3 example showed the proxy as resolver (old entries 4–7:
+  app → proxy DNS, proxy → internet DNS); spec rev 6 drops those rules
+  (7 entries, 10 IR rules), on this branch.
 - Harder: two more resources per VPC, so goldens grow. Leaving
   `domain_name` out would change instances' search domain from AWS's
   default; the Part A spec settles it, M5 verifies it.
@@ -99,7 +99,7 @@ AWS offers two ways to govern Resolver traffic by name:
 
 ## Links
 
-- M3 spec `docs/design/m3-policy.md` §3 (DNS comments, entries 4–7)
+- M3 spec `docs/design/m3-policy.md` §3 and §7 (rev 6)
 - ADR [0006](0006-symbolic-endpoints.md), [0007](0007-least-privilege-egress.md)
 - Private DNS needs both VPC attributes:
   https://docs.aws.amazon.com/vpc/latest/privatelink/interface-endpoints.html

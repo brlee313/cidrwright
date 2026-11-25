@@ -1,6 +1,6 @@
 # A small three-tier web app: internet -> web -> app -> db, admin access
-# over WireGuard, and all outbound traffic from private tiers through a
-# public proxy that also resolves DNS.
+# over WireGuard, and all outbound web traffic from private tiers through
+# a public HTTP(S) forward proxy.
 #
 # Not shown here, by design (each is someone else's job):
 # - Replies need no rules: AWS security groups are stateful.
@@ -8,17 +8,14 @@
 #   a policy entry (M4).
 # - What makes a tier "public" on AWS (internet gateway route, public IPs)
 #   is M4's.
-# - DNS governance is NOT decided yet (M4 decides, before the AWS emitter
-#   design). Entries 4-7 show one option: the proxy is the resolver. The
-#   other: keep the cloud's built-in resolver and filter it by domain
-#   name (AWS: Route 53 Resolver DNS Firewall). Either way, every cloud's
-#   built-in resolver bypasses ordinary firewall rules by default
-#   (AWS VPC+2, Azure 168.63.129.16, GCP metadata server), so until M4
-#   decides, this example does not guarantee DNS goes through the proxy.
+# - DNS needs no policy entries: every tier resolves names through the
+#   cloud's built-in resolver (AWS: VPC base + 2), which security groups
+#   don't filter. The emitter keeps VPC DNS on (ADR 0009). Filtering
+#   names by domain is decided before M5's first apply (ADR 0009); until
+#   then lookups are unfiltered.
 # - Tiers with no outbound rule (web, db) can't start connections to
 #   anything not listed (e.g. no OS updates). Intended here; add entries
-#   (e.g. db -> proxy) if they need them. They can still look up names
-#   through the cloud's built-in resolver (see the DNS note).
+#   (e.g. db -> proxy) if they need them.
 vpc:
   cidr: 10.20.0.0/16
   azs: [a, b]
@@ -26,7 +23,7 @@ tiers:
   - {name: web,   prefix: 24, public: true}   # load balancers / reverse proxies
   - {name: app,   prefix: 23}
   - {name: db,    prefix: 26}
-  - {name: proxy, prefix: 28, public: true}   # forward proxy + DNS resolver
+  - {name: proxy, prefix: 28, public: true}   # HTTP(S) forward proxy
 vpn:
   type: wireguard              # contents validated in M4
   client_pool: 10.99.0.0/24
@@ -52,27 +49,17 @@ policy:
     to: [web, app, db]
     proto: tcp
     ports: [22]
-  - action: allow              # 4: app -> proxy: DNS over TCP, HTTP(S) proxy
+  - action: allow              # 4: app -> proxy: HTTP(S) proxy
     from: app
     to: proxy
     proto: tcp
-    ports: [53, 3128]
-  - action: allow              # 5: app -> proxy: DNS over UDP
-    from: app
-    to: proxy
-    proto: udp
-    ports: [53]
-  - action: allow              # 6: proxy -> internet: upstream DNS (TCP), HTTPS
+    ports: [3128]
+  - action: allow              # 5: proxy -> internet: HTTPS
     from: proxy
     to: internet
     proto: tcp
-    ports: [53, 443]           # HTTPS only: plain-HTTP (80) sites are unreachable on purpose
-  - action: allow              # 7: proxy -> internet: upstream DNS (UDP)
-    from: proxy
-    to: internet
-    proto: udp
-    ports: [53]
-  - action: allow              # 8: ping and path-MTU discovery to the app, for troubleshooting
+    ports: [443]               # HTTPS only: plain-HTTP (80) sites are unreachable on purpose
+  - action: allow              # 6: ping and path-MTU discovery to the app, for troubleshooting
     from: vpn
     to: app
     proto: icmp

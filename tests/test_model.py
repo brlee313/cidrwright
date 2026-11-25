@@ -459,7 +459,7 @@ def test_spec_example_network():
         "client_pool": "10.99.0.0/24",
         "peers": ["bruce-laptop", "bruce-phone"],
     }
-    assert len(net.rules) == 14
+    assert len(net.rules) == 10
 
 
 def test_golden_spec_rules():
@@ -470,14 +470,10 @@ def test_golden_spec_rules():
         Rule(Vpn(), TierRef("web"), "tcp", PortRange(22, 22), 3),
         Rule(Vpn(), TierRef("app"), "tcp", PortRange(22, 22), 3),
         Rule(Vpn(), TierRef("db"), "tcp", PortRange(22, 22), 3),
-        Rule(TierRef("app"), TierRef("proxy"), "tcp", PortRange(53, 53), 4),
         Rule(TierRef("app"), TierRef("proxy"), "tcp", PortRange(3128, 3128), 4),
-        Rule(TierRef("app"), TierRef("proxy"), "udp", PortRange(53, 53), 5),
-        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(53, 53), 6),
-        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(443, 443), 6),
-        Rule(TierRef("proxy"), Internet(), "udp", PortRange(53, 53), 7),
-        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(8, None), 8),
-        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(3, 4), 8),
+        Rule(TierRef("proxy"), Internet(), "tcp", PortRange(443, 443), 5),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(8, None), 6),
+        Rule(Vpn(), TierRef("app"), "icmp", IcmpMatch(3, 4), 6),
     )
 
 
