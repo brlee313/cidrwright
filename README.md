@@ -6,6 +6,10 @@ Terraform to build it.
 
 **Status:** early development, built as a learning project with aider.
 
+How design decisions are made and reviewed:
+[`docs/process/design-review.md`](docs/process/design-review.md); the
+decisions themselves are in [`docs/adr/`](docs/adr/README.md).
+
 ## Safety
 
 - Secrets and Terraform state are excluded via `.gitignore` and `.aiderignore`.
