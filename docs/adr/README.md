@@ -54,4 +54,5 @@ fixed by appending a dated, italic note under it ("*Update YYYY-MM-DD:
 | [0007](0007-least-privilege-egress.md) | No default egress; each rule is granted at both ends | Accepted |
 | [0008](0008-az-zone-ids-target-file.md) | AZ keys map to zone IDs in a committed target file | Proposed |
 | [0009](0009-vpc-dns-on-filtering-deferred.md) | VPC DNS stays on; DNS filtering is decided before M5 | Proposed |
+| [0010](0010-one-rule-two-resources-sg-references.md) | One SG rule resource per tier end; tiers reference each other's SGs | Proposed |
 | [0011](0011-apache-2-license-dco.md) | License under Apache-2.0; contributions by DCO sign-off, no CLA | Accepted |
