@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** YYYY-MM-DD (the day it is accepted)
-- **Milestone / issue:** M4 / #?
+- **Milestone / issue:** M4 / #20
 
 Decided Nov 25, 2026 on the M4 design day. Settles the DNS question the
 M3 spec left open (§3 example comments; deferred Nov 3).
@@ -47,7 +47,7 @@ AWS offers two ways to govern Resolver traffic by name:
    setup with its forwarding rule.
 3. **Deferred on the record:** DNS Firewall vs outbound forwarding, and
    the network-YAML vocabulary for allowed names (`dns:`). Trigger:
-   before M5's first `apply`, tracked by issue #? (M5; blocks the first
+   before M5's first `apply`, tracked by issue #24 (M5; blocks the first
    apply). Until then, a `dns:` key is rejected as an unknown top-level
    key (existing rule). When `dns:` is added it is **required**: a
    network file without it is an error that names the fix. No silent
@@ -70,7 +70,7 @@ AWS offers two ways to govern Resolver traffic by name:
   real workloads need, what each option costs and how it behaves, or
   whether Azure and GCP can filter by name (ADR 0006: the vocabulary must
   stay cloud-neutral). M4 deploys nothing, so waiting costs nothing until
-  M5, and issue #? keeps the deadline visible.
+  M5, and issue #24 keeps the deadline visible.
 - **Missing `dns:` means block all:** fails closed, but silently breaks
   every existing network file the day `dns:` lands.
 - **Missing `dns:` means today's behavior:** non-breaking, but fails
@@ -90,7 +90,7 @@ AWS offers two ways to govern Resolver traffic by name:
   `domain_name` out would change instances' search domain from AWS's
   default; the Part A spec settles it, M5 verifies it.
 - Harder: until the trigger, deployments would get unfiltered DNS;
-  issue #? blocks M5's first `apply` until the deferred decision is made.
+  issue #24 blocks M5's first `apply` until the deferred decision is made.
   Inputs to gather are listed in that issue.
 - When `dns:` lands, every existing network file must add it (a loud,
   one-time break).

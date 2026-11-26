@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** YYYY-MM-DD (the day it is accepted)
-- **Milestone / issue:** M4 / #?
+- **Milestone / issue:** M4 / #20
 
 Decided Nov 25, 2026 on the M4 design day. Sets how the AWS emitter
 realizes the IR from [0006](0006-symbolic-endpoints.md) and

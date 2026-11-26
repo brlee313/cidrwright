@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** YYYY-MM-DD (the day it is accepted)
-- **Milestone / issue:** M4 / #?
+- **Milestone / issue:** M4 / #20
 
 Decided Nov 24–25, 2026 on the M4 design day. Closes the question that
 [0003](0003-az-keys-opaque.md) left open (moved to M4, M3 spec §10 Q1).
