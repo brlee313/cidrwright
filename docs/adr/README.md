@@ -1,6 +1,7 @@
 # Architecture Decision Records
 
-An ADR records one decision that shapes CIDRwright's design. It says what
+An ADR records one decision that shapes CIDRwright's design or the terms
+it is developed under. It says what
 was decided, why, and what we gave up. Specs say *what* to build; ADRs say
 *why it is built this way*, so a later reader (or an AI agent) doesn't
 undo a decision without knowing its reasons.
@@ -10,8 +11,9 @@ undo a decision without knowing its reasons.
 Write an ADR when a decision:
 
 - is hard or expensive to reverse (data model, file formats, public API);
-- rules out a reasonable alternative someone might later suggest; or
-- constrains future milestones (e.g. "IPAM needs no AWS access").
+- rules out a reasonable alternative someone might later suggest;
+- constrains future milestones (e.g. "IPAM needs no AWS access"); or
+- sets project-level terms (license, contribution terms).
 
 Don't write one for a choice that's obvious, local to one function, or
 already enforced by a test with a clear name.
@@ -50,3 +52,4 @@ fixed by appending a dated, italic note under it ("*Update YYYY-MM-DD:
 | [0005](0005-tiers-are-data.md) | Tiers are data, not code | Accepted |
 | [0006](0006-symbolic-endpoints.md) | Policy rules name roles, not addresses or cloud objects | Accepted |
 | [0007](0007-least-privilege-egress.md) | No default egress; each rule is granted at both ends | Accepted |
+| [0011](0011-apache-2-license-dco.md) | License under Apache-2.0; contributions by DCO sign-off, no CLA | Accepted |

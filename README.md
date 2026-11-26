@@ -12,3 +12,13 @@ Terraform to build it.
 - A gitleaks pre-commit hook blocks commits containing secrets
   (run `pre-commit install` after cloning).
 - CI rescans the full git history on every pull request.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md): every
+commit needs a DCO sign-off (`git commit -s`).
+
+## License
+
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE). Versions released
+before 2026-11-26 were MIT-licensed.

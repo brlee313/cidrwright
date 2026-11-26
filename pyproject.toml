@@ -1,6 +1,8 @@
 [project]
 name = "cidrwright"
 version = "0.1.0"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = ["PyYAML>=6"]
 
@@ -8,7 +10,7 @@ dependencies = ["PyYAML>=6"]
 dev = ["pytest>=8", "hypothesis>=6", "pyright==1.1.414"]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]   # 77+: SPDX `license` string (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [tool.pyright]
